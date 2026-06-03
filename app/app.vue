@@ -44,7 +44,19 @@ const moveStartPos = ref<{ x: number, y: number } | null>(null)
 const resizeDragging = ref(false)
 const resizeTargetIndex = ref<number | null>(null)
 const resizeStartPos = ref<{ x: number, y: number } | null>(null)
-const resizeStartValue = ref<{ length?: number, angle?: number, size?: number, fontSize?: number, width?: number, height?: number, path?: { x: number, y: number }[], center?: { x: number, y: number } } | null>(null)
+const resizeStartValue = ref<{
+  length?: number
+  angle?: number
+  size?: number
+  fontSize?: number
+  width?: number
+  height?: number
+  x?: number
+  y?: number
+  corner?: 'nw' | 'ne' | 'sw' | 'se'
+  path?: { x: number, y: number }[]
+  center?: { x: number, y: number }
+} | null>(null)
 const hoveredAnnotationIndex = ref<number | null>(null)
 
 // Text tool: show overlay input at click position (canvas coords)
@@ -66,16 +78,26 @@ const boxPreview = ref<{ x: number, y: number } | null>(null)
 const strokeColor = ref('#ef4444')
 const strokeWidth = ref(4)
 const currentPath = ref<{ x: number, y: number }[]>([])
-const originalImageData = ref<ImageData | null>(null)
-const currentImageObjectUrl = ref<string | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
+
+type BaseImage = {
+  objectUrl: string | null
+  image: HTMLImageElement
+}
+
+const baseImage = ref<BaseImage | null>(null)
+const imageElementCache = new Map<string, HTMLImageElement>()
+const trackedObjectUrls = new Set<string>()
+const showPasteDialog = ref(false)
+const pendingPasteFile = ref<File | null>(null)
 
 type PenStroke = { type: 'pen', path: { x: number, y: number }[], color: string, lineWidth: number }
 type ArrowAnnotation = { type: 'arrow', x1: number, y1: number, length: number, angle: number, color: string, lineWidth: number }
 type BoxAnnotation = { type: 'box', x: number, y: number, width: number, height: number, color: string, lineWidth: number }
 type EmojiAnnotation = { type: 'emoji', x: number, y: number, emoji: string, size: number }
 type TextAnnotation = { type: 'text', x: number, y: number, text: string, fontSize: number, color: string }
-type Annotation = PenStroke | ArrowAnnotation | BoxAnnotation | EmojiAnnotation | TextAnnotation
+type ImageAnnotation = { type: 'image', id: string, objectUrl: string | null, x: number, y: number, width: number, height: number }
+type Annotation = PenStroke | ArrowAnnotation | BoxAnnotation | EmojiAnnotation | TextAnnotation | ImageAnnotation
 
 const annotations = ref<Annotation[]>([])
 const annotationHistory = ref<Annotation[][]>([])
@@ -95,6 +117,7 @@ function undo() {
 }
 
 const canUndo = computed(() => annotationHistory.value.length > 0)
+const hasClearableContent = computed(() => hasImage.value)
 
 const colors = [
   { name: 'Red', value: '#ef4444' },
@@ -230,7 +253,7 @@ function updateCanvasDisplaySize() {
   const maxH = wrapper.clientHeight
   if (maxW === 0 || maxH === 0) return
 
-  const scale = Math.min(maxW / canvas.width, maxH / canvas.height)
+  const scale = Math.min(maxW / canvas.width, maxH / canvas.height, 1)
   canvas.style.width = `${Math.floor(canvas.width * scale)}px`
   canvas.style.height = `${Math.floor(canvas.height * scale)}px`
 }
@@ -282,16 +305,12 @@ function drawArrow(ctx: CanvasRenderingContext2D, a: ArrowAnnotation) {
   drawArrowHead(ctx, { x: a.x1, y: a.y1 }, { x: x2, y: y2 }, a.color, a.lineWidth)
 }
 
-function redrawCanvas() {
-  const canvas = getCanvas()
-  const ctx = getCanvasContext()
-  const imgData = originalImageData.value
-  if (!canvas || !ctx || !imgData) return
-
-  ctx.putImageData(imgData, 0, 0)
-
+function drawAnnotations(ctx: CanvasRenderingContext2D) {
   for (const ann of annotations.value) {
-    if (ann.type === 'pen') {
+    if (ann.type === 'image') {
+      const img = imageElementCache.get(ann.id)
+      if (img) ctx.drawImage(img, ann.x, ann.y, ann.width, ann.height)
+    } else if (ann.type === 'pen') {
       if (ann.path.length < 2) continue
       ctx.strokeStyle = ann.color
       ctx.lineWidth = ann.lineWidth
@@ -326,22 +345,23 @@ function redrawCanvas() {
       }
     }
   }
+}
 
-  // Resize handle (move mode, hovered annotation)
-  if (toolMode.value === 'move' && hoveredAnnotationIndex.value !== null && !moveDragging.value && !resizeDragging.value) {
-    const ann = annotations.value[hoveredAnnotationIndex.value]
-    if (ann) {
-      const pos = getResizeHandlePosition(ann)
-      if (pos) {
-        ctx.fillStyle = 'rgba(59, 130, 246, 0.9)'
-        ctx.strokeStyle = '#fff'
-        ctx.lineWidth = 2
-        ctx.beginPath()
-        ctx.arc(pos.x, pos.y, RESIZE_HANDLE_DRAW_RADIUS, 0, Math.PI * 2)
-        ctx.fill()
-        ctx.stroke()
-      }
-    }
+function redrawCanvas() {
+  const canvas = getCanvas()
+  const ctx = getCanvasContext()
+  const base = baseImage.value
+  if (!canvas || !ctx || !base) return
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.drawImage(base.image, 0, 0, canvas.width, canvas.height)
+  drawAnnotations(ctx)
+
+  // Resize handles (move mode, hovered or actively resized annotation)
+  const handleIndex = resizeDragging.value ? resizeTargetIndex.value : hoveredAnnotationIndex.value
+  if (toolMode.value === 'move' && handleIndex !== null && !moveDragging.value) {
+    const ann = annotations.value[handleIndex]
+    if (ann) drawResizeHandles(ctx, ann)
   }
 
   // Preview: box being drawn
@@ -375,44 +395,100 @@ function redrawCanvas() {
   }
 }
 
-function loadImageToCanvas(url: string) {
-  const img = new Image()
-  img.onload = () => {
-    const canvas = getCanvas()
-    const ctx = getCanvasContext()
-    if (!canvas || !ctx) return
-    canvas.width = img.naturalWidth
-    canvas.height = img.naturalHeight
-    ctx.drawImage(img, 0, 0)
-    originalImageData.value = ctx.getImageData(0, 0, canvas.width, canvas.height)
-    hasImage.value = true
-    annotations.value = []
-    annotationHistory.value = []
-    selectedArrowIndex.value = null
-    boxStart.value = null
-    boxPreview.value = null
-    moveDragging.value = false
-    moveTargetIndex.value = null
-    moveStartPos.value = null
-    resizeDragging.value = false
-    resizeTargetIndex.value = null
-    resizeStartPos.value = null
-    resizeStartValue.value = null
-    hoveredAnnotationIndex.value = null
-    redrawCanvas()
-    nextTick(() => updateCanvasDisplaySize())
-  }
-  img.src = url
+function loadImageElement(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => resolve(img)
+    img.onerror = () => reject(new Error('Failed to load image'))
+    img.src = url
+  })
 }
 
-function clearAnnotations() {
+function computeLayerPlacement(naturalW: number, naturalH: number, canvasW: number, canvasH: number) {
+  let width = naturalW
+  let height = naturalH
+  if (width > canvasW || height > canvasH) {
+    const scale = Math.min(canvasW / width, canvasH / height)
+    width = Math.floor(width * scale)
+    height = Math.floor(height * scale)
+  }
+  return {
+    x: Math.floor((canvasW - width) / 2),
+    y: Math.floor((canvasH - height) / 2),
+    width,
+    height,
+  }
+}
+
+function registerImageElement(id: string, img: HTMLImageElement, objectUrl: string | null) {
+  imageElementCache.set(id, img)
+  if (objectUrl) trackedObjectUrls.add(objectUrl)
+}
+
+function clearImageResources() {
+  for (const url of trackedObjectUrls) URL.revokeObjectURL(url)
+  trackedObjectUrls.clear()
+  imageElementCache.clear()
+  baseImage.value = null
+}
+
+function getImageCornerHandles(ann: ImageAnnotation) {
+  return {
+    nw: { x: ann.x, y: ann.y },
+    ne: { x: ann.x + ann.width, y: ann.y },
+    sw: { x: ann.x, y: ann.y + ann.height },
+    se: { x: ann.x + ann.width, y: ann.y + ann.height },
+  }
+}
+
+function hitTestImageCorner(ann: ImageAnnotation, canvasX: number, canvasY: number): 'nw' | 'ne' | 'sw' | 'se' | null {
+  for (const [corner, pos] of Object.entries(getImageCornerHandles(ann)) as ['nw' | 'ne' | 'sw' | 'se', { x: number, y: number }][]) {
+    if (Math.hypot(canvasX - pos.x, canvasY - pos.y) <= RESIZE_HANDLE_RADIUS) return corner
+  }
+  return null
+}
+
+function hitTestImage(ann: ImageAnnotation, x: number, y: number): boolean {
+  const margin = 4
+  return x >= ann.x - margin && x <= ann.x + ann.width + margin &&
+    y >= ann.y - margin && y <= ann.y + ann.height + margin
+}
+
+function drawResizeHandles(ctx: CanvasRenderingContext2D, ann: Annotation) {
+  if (ann.type === 'image') {
+    ctx.strokeStyle = 'rgba(59, 130, 246, 0.85)'
+    ctx.lineWidth = 2
+    ctx.strokeRect(ann.x, ann.y, ann.width, ann.height)
+    for (const pos of Object.values(getImageCornerHandles(ann))) {
+      ctx.fillStyle = 'rgba(59, 130, 246, 0.9)'
+      ctx.strokeStyle = '#fff'
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      ctx.arc(pos.x, pos.y, RESIZE_HANDLE_DRAW_RADIUS, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.stroke()
+    }
+    return
+  }
+  const pos = getResizeHandlePosition(ann)
+  if (!pos) return
+  ctx.fillStyle = 'rgba(59, 130, 246, 0.9)'
+  ctx.strokeStyle = '#fff'
+  ctx.lineWidth = 2
+  ctx.beginPath()
+  ctx.arc(pos.x, pos.y, RESIZE_HANDLE_DRAW_RADIUS, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.stroke()
+}
+
+function resetDrawingState() {
   annotations.value = []
   annotationHistory.value = []
+  selectedArrowIndex.value = null
   arrowStart.value = null
   arrowPreview.value = null
   boxStart.value = null
   boxPreview.value = null
-  selectedArrowIndex.value = null
   moveDragging.value = false
   moveTargetIndex.value = null
   moveStartPos.value = null
@@ -421,7 +497,107 @@ function clearAnnotations() {
   resizeStartPos.value = null
   resizeStartValue.value = null
   hoveredAnnotationIndex.value = null
-  redrawCanvas()
+  textInputVisible.value = false
+  textInputCanvasPos.value = null
+  textInputValue.value = ''
+  pendingEmoji.value = null
+  showEmojiPicker.value = false
+}
+
+async function replaceWithImage(fileOrUrl: File | string) {
+  clearImageResources()
+  const objectUrl = typeof fileOrUrl !== 'string' ? URL.createObjectURL(fileOrUrl) : null
+  const url = objectUrl ?? fileOrUrl
+  try {
+    const img = await loadImageElement(url)
+    const canvas = getCanvas()
+    const ctx = getCanvasContext()
+    if (!canvas || !ctx) return
+    canvas.width = img.naturalWidth
+    canvas.height = img.naturalHeight
+    if (objectUrl) trackedObjectUrls.add(objectUrl)
+    baseImage.value = { objectUrl, image: img }
+    hasImage.value = true
+    resetDrawingState()
+    redrawCanvas()
+    nextTick(() => {
+      updateCanvasDisplaySize()
+      playImageSlamEffect('full')
+    })
+  } catch (err) {
+    if (objectUrl) URL.revokeObjectURL(objectUrl)
+    console.error('Failed to load image:', err)
+  }
+}
+
+async function addImageAsLayer(file: File) {
+  const canvas = getCanvas()
+  if (!canvas || !hasImage.value) return
+  const objectUrl = URL.createObjectURL(file)
+  try {
+    const img = await loadImageElement(objectUrl)
+    const id = crypto.randomUUID()
+    registerImageElement(id, img, objectUrl)
+    const placement = computeLayerPlacement(img.naturalWidth, img.naturalHeight, canvas.width, canvas.height)
+    pushAnnotationState()
+    annotations.value = [...annotations.value, {
+      type: 'image',
+      id,
+      objectUrl,
+      ...placement,
+    }]
+    setToolMode('move')
+    hoveredAnnotationIndex.value = annotations.value.length - 1
+    redrawCanvas()
+    const layer = annotations.value[annotations.value.length - 1]!
+    nextTick(() => playImageSlamEffect('light', layer.type === 'image' ? layer : undefined))
+  } catch (err) {
+    URL.revokeObjectURL(objectUrl)
+    console.error('Failed to add image layer:', err)
+  }
+}
+
+function queueImageImport(file: File) {
+  if (hasImage.value) {
+    pendingPasteFile.value = file
+    showPasteDialog.value = true
+  } else {
+    replaceWithImage(file)
+  }
+}
+
+function cancelPasteDialog() {
+  showPasteDialog.value = false
+  pendingPasteFile.value = null
+}
+
+async function confirmReplaceImage() {
+  const file = pendingPasteFile.value
+  if (!file) return
+  cancelPasteDialog()
+  await replaceWithImage(file)
+}
+
+async function confirmAddImageLayer() {
+  const file = pendingPasteFile.value
+  if (!file) return
+  cancelPasteDialog()
+  await addImageAsLayer(file)
+}
+
+function clearAnnotations() {
+  cancelPasteDialog()
+  closeToolbarMenu()
+  clearImageResources()
+  resetDrawingState()
+  hasImage.value = false
+  const canvas = getCanvas()
+  if (canvas) {
+    canvas.width = 0
+    canvas.height = 0
+    canvas.style.width = ''
+    canvas.style.height = ''
+  }
 }
 
 function startDrawing(e: MouseEvent | TouchEvent) {
@@ -432,11 +608,13 @@ function startDrawing(e: MouseEvent | TouchEvent) {
   if (toolMode.value === 'move') {
     const idx = getHoveredAnnotationForMoveMode(x, y)
     if (idx !== null) {
-      if (hitTestResizeHandle(idx, x, y)) {
+      const ann = annotations.value[idx]
+      const imageCorner = ann.type === 'image' ? hitTestImageCorner(ann, x, y) : null
+      const onResizeHandle = imageCorner != null || hitTestResizeHandle(idx, x, y)
+      if (onResizeHandle) {
         pushAnnotationState()
         resizeTargetIndex.value = idx
         resizeStartPos.value = { x, y }
-        const ann = annotations.value[idx]
         if (ann.type === 'arrow') {
           resizeStartValue.value = { length: ann.length, angle: ann.angle }
         } else if (ann.type === 'box') {
@@ -453,6 +631,8 @@ function startDrawing(e: MouseEvent | TouchEvent) {
             minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y)
           }
           resizeStartValue.value = { path: JSON.parse(JSON.stringify(path)), center: { x: (minX + maxX) / 2, y: (minY + maxY) / 2 } }
+        } else if (ann.type === 'image' && imageCorner) {
+          resizeStartValue.value = { x: ann.x, y: ann.y, width: ann.width, height: ann.height, corner: imageCorner }
         } else {
           resizeStartValue.value = {}
         }
@@ -738,7 +918,12 @@ const RESIZE_HANDLE_DRAW_RADIUS = 12
 
 function getAnnotationIndexByResizeHandle(canvasX: number, canvasY: number): number | null {
   for (let i = annotations.value.length - 1; i >= 0; i--) {
-    if (hitTestResizeHandle(i, canvasX, canvasY)) return i
+    const ann = annotations.value[i]
+    if (ann.type === 'image') {
+      if (hitTestImageCorner(ann, canvasX, canvasY)) return i
+    } else if (hitTestResizeHandle(i, canvasX, canvasY)) {
+      return i
+    }
   }
   return null
 }
@@ -777,7 +962,7 @@ function getResizeHandlePosition(ann: Annotation): { x: number, y: number } | nu
 
 function hitTestResizeHandle(index: number, canvasX: number, canvasY: number): boolean {
   const ann = annotations.value[index]
-  if (!ann) return false
+  if (!ann || ann.type === 'image') return false
   const pos = getResizeHandlePosition(ann)
   if (!pos) return false
   return Math.hypot(canvasX - pos.x, canvasY - pos.y) <= RESIZE_HANDLE_RADIUS
@@ -786,6 +971,7 @@ function hitTestResizeHandle(index: number, canvasX: number, canvasY: number): b
 function getAnnotationAt(canvasX: number, canvasY: number): number | null {
   for (let i = annotations.value.length - 1; i >= 0; i--) {
     const ann = annotations.value[i]
+    if (ann.type === 'image' && hitTestImage(ann, canvasX, canvasY)) return i
     if (ann.type === 'arrow' && hitTestArrow(ann, canvasX, canvasY)) return i
     if (ann.type === 'box' && hitTestBox(ann, canvasX, canvasY)) return i
     if (ann.type === 'emoji' && hitTestEmoji(ann, canvasX, canvasY)) return i
@@ -806,6 +992,8 @@ function translateAnnotation(index: number, dx: number, dy: number) {
   } else if (ann.type === 'emoji') {
     next[index] = { ...ann, x: ann.x + dx, y: ann.y + dy }
   } else if (ann.type === 'text') {
+    next[index] = { ...ann, x: ann.x + dx, y: ann.y + dy }
+  } else if (ann.type === 'image') {
     next[index] = { ...ann, x: ann.x + dx, y: ann.y + dy }
   } else if (ann.type === 'pen') {
     next[index] = { ...ann, path: ann.path.map(p => ({ x: p.x + dx, y: p.y + dy })) }
@@ -829,6 +1017,31 @@ function resizeAnnotation(index: number, canvasX: number, canvasY: number) {
     const newWidth = Math.max(8, canvasX - ann.x)
     const newHeight = Math.max(8, canvasY - ann.y)
     next[index] = { ...ann, width: newWidth, height: newHeight }
+  } else if (ann.type === 'image' && startVal.x != null && startVal.y != null && startVal.width != null && startVal.height != null && startVal.corner) {
+    const minSize = 8
+    let { x, y, width, height } = { x: startVal.x, y: startVal.y, width: startVal.width, height: startVal.height }
+    if (startVal.corner === 'se') {
+      width = Math.max(minSize, canvasX - x)
+      height = Math.max(minSize, canvasY - y)
+    } else if (startVal.corner === 'nw') {
+      const right = x + width
+      const bottom = y + height
+      x = Math.min(canvasX, right - minSize)
+      y = Math.min(canvasY, bottom - minSize)
+      width = right - x
+      height = bottom - y
+    } else if (startVal.corner === 'ne') {
+      const bottom = y + height
+      y = Math.min(canvasY, bottom - minSize)
+      width = Math.max(minSize, canvasX - x)
+      height = bottom - y
+    } else if (startVal.corner === 'sw') {
+      const right = x + width
+      x = Math.min(canvasX, right - minSize)
+      width = right - x
+      height = Math.max(minSize, canvasY - y)
+    }
+    next[index] = { ...ann, x, y, width, height }
   } else if (ann.type === 'emoji' && startVal.size != null) {
     const dy = canvasY - start.y
     const newSize = Math.max(12, Math.min(500, startVal.size + dy))
@@ -894,16 +1107,6 @@ async function copyToClipboard() {
   }
 }
 
-function loadImageFromFileOrUrl(fileOrUrl: File | string) {
-  if (currentImageObjectUrl.value) {
-    URL.revokeObjectURL(currentImageObjectUrl.value)
-    currentImageObjectUrl.value = null
-  }
-  const url = typeof fileOrUrl === 'string' ? fileOrUrl : URL.createObjectURL(fileOrUrl)
-  if (typeof fileOrUrl !== 'string') currentImageObjectUrl.value = url
-  loadImageToCanvas(url)
-}
-
 function handlePaste(e: ClipboardEvent) {
   const items = e.clipboardData?.items
   if (!items) return
@@ -911,7 +1114,7 @@ function handlePaste(e: ClipboardEvent) {
     if (item.type.startsWith('image/')) {
       e.preventDefault()
       const file = item.getAsFile()
-      if (file) loadImageFromFileOrUrl(file)
+      if (file) queueImageImport(file)
       break
     }
   }
@@ -921,7 +1124,7 @@ function handleFileSelect(e: Event) {
   const input = e.target as HTMLInputElement
   const file = input.files?.[0]
   if (file && file.type.startsWith('image/')) {
-    loadImageFromFileOrUrl(file)
+    queueImageImport(file)
   }
   input.value = ''
 }
@@ -943,6 +1146,7 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 function setToolMode(mode: typeof toolMode.value) {
   if (!hasImage.value) return
+  const prevMode = toolMode.value
 
   toolMode.value = mode
   boxStart.value = null
@@ -966,7 +1170,304 @@ function setToolMode(mode: typeof toolMode.value) {
   }
 
   if (mode === 'move') redrawCanvas()
+
+  if (prevMode !== mode) {
+    playToolSwitchEffect()
+    updateToolIndicator()
+  }
 }
+
+const toolStripRef = ref<HTMLElement | null>(null)
+const toolButtonEls = new Map<typeof toolMode.value, HTMLButtonElement>()
+const toolIndicatorStyle = ref({ left: '0px', width: '0px', opacity: '0' })
+const toolSwitchAnim = ref(false)
+let toolSwitchAnimTimer: ReturnType<typeof setTimeout> | null = null
+
+function registerToolButton(mode: typeof toolMode.value, el: unknown) {
+  if (el instanceof HTMLButtonElement) toolButtonEls.set(mode, el)
+  else toolButtonEls.delete(mode)
+}
+
+function updateToolIndicator() {
+  nextTick(() => {
+    const strip = toolStripRef.value
+    const btn = toolButtonEls.get(toolMode.value)
+    if (!strip || !btn) return
+    const stripRect = strip.getBoundingClientRect()
+    const btnRect = btn.getBoundingClientRect()
+    toolIndicatorStyle.value = {
+      left: `${btnRect.left - stripRect.left}px`,
+      width: `${btnRect.width}px`,
+      opacity: '1',
+    }
+  })
+}
+
+const colorStripRef = ref<HTMLElement | null>(null)
+const colorMenuStripRef = ref<HTMLElement | null>(null)
+const colorButtonEls = new Map<string, HTMLButtonElement>()
+const colorMenuButtonEls = new Map<string, HTMLButtonElement>()
+const colorIndicatorStyle = ref({ left: '0px', top: '0px', width: '0px', height: '0px', opacity: '0' })
+const colorMenuIndicatorStyle = ref({ left: '0px', top: '0px', width: '0px', height: '0px', opacity: '0' })
+
+const strokeStripRef = ref<HTMLElement | null>(null)
+const strokeMenuStripRef = ref<HTMLElement | null>(null)
+const strokeButtonEls = new Map<number, HTMLButtonElement>()
+const strokeMenuButtonEls = new Map<number, HTMLButtonElement>()
+const strokeIndicatorStyle = ref({ left: '0px', width: '0px', opacity: '0' })
+const strokeMenuIndicatorStyle = ref({ left: '0px', width: '0px', opacity: '0' })
+
+const colorPickAnim = ref(false)
+const strokePickAnim = ref(false)
+let colorPickAnimTimer: ReturnType<typeof setTimeout> | null = null
+let strokePickAnimTimer: ReturnType<typeof setTimeout> | null = null
+
+function registerColorButton(value: string, el: unknown, menu = false) {
+  const map = menu ? colorMenuButtonEls : colorButtonEls
+  if (el instanceof HTMLButtonElement) map.set(value, el)
+  else map.delete(value)
+}
+
+function registerStrokeButton(size: number, el: unknown, menu = false) {
+  const map = menu ? strokeMenuButtonEls : strokeButtonEls
+  if (el instanceof HTMLButtonElement) map.set(size, el)
+  else map.delete(size)
+}
+
+function updateColorIndicator(
+  stripRef: typeof colorStripRef,
+  buttonMap: Map<string, HTMLButtonElement>,
+  styleRef: typeof colorIndicatorStyle,
+) {
+  nextTick(() => {
+    const strip = stripRef.value
+    const btn = buttonMap.get(strokeColor.value)
+    if (!strip || !btn) return
+    const stripRect = strip.getBoundingClientRect()
+    const btnRect = btn.getBoundingClientRect()
+    styleRef.value = {
+      left: `${btnRect.left - stripRect.left}px`,
+      top: `${btnRect.top - stripRect.top}px`,
+      width: `${btnRect.width}px`,
+      height: `${btnRect.height}px`,
+      opacity: '1',
+    }
+  })
+}
+
+function updateStrokeIndicator(
+  stripRef: typeof strokeStripRef,
+  buttonMap: Map<number, HTMLButtonElement>,
+  styleRef: typeof strokeIndicatorStyle,
+) {
+  nextTick(() => {
+    const strip = stripRef.value
+    const btn = buttonMap.get(strokeWidth.value)
+    if (!strip || !btn) return
+    const stripRect = strip.getBoundingClientRect()
+    const btnRect = btn.getBoundingClientRect()
+    styleRef.value = {
+      left: `${btnRect.left - stripRect.left}px`,
+      width: `${btnRect.width}px`,
+      opacity: '1',
+    }
+  })
+}
+
+function updateAllColorIndicators() {
+  updateColorIndicator(colorStripRef, colorButtonEls, colorIndicatorStyle)
+  updateColorIndicator(colorMenuStripRef, colorMenuButtonEls, colorMenuIndicatorStyle)
+}
+
+function updateAllStrokeIndicators() {
+  updateStrokeIndicator(strokeStripRef, strokeButtonEls, strokeIndicatorStyle)
+  updateStrokeIndicator(strokeMenuStripRef, strokeMenuButtonEls, strokeMenuIndicatorStyle)
+}
+
+function updateAllPickerIndicators() {
+  updateToolIndicator()
+  updateAllColorIndicators()
+  updateAllStrokeIndicators()
+}
+
+function playColorPickEffect() {
+  if (colorPickAnimTimer) clearTimeout(colorPickAnimTimer)
+  colorPickAnim.value = false
+  nextTick(() => {
+    colorPickAnim.value = true
+    colorPickAnimTimer = setTimeout(() => {
+      colorPickAnim.value = false
+    }, 400)
+  })
+}
+
+function playStrokePickEffect() {
+  if (strokePickAnimTimer) clearTimeout(strokePickAnimTimer)
+  strokePickAnim.value = false
+  nextTick(() => {
+    strokePickAnim.value = true
+    strokePickAnimTimer = setTimeout(() => {
+      strokePickAnim.value = false
+    }, 400)
+  })
+}
+
+function selectStrokeColor(value: string) {
+  if (!hasImage.value || strokeColor.value === value) return
+  strokeColor.value = value
+  playColorPickEffect()
+  updateAllColorIndicators()
+}
+
+function selectStrokeWidth(size: number) {
+  if (!hasImage.value || strokeWidth.value === size) return
+  strokeWidth.value = size
+  playStrokePickEffect()
+  updateAllStrokeIndicators()
+}
+
+function playToolSwitchEffect() {
+  if (toolSwitchAnimTimer) clearTimeout(toolSwitchAnimTimer)
+  toolSwitchAnim.value = false
+  nextTick(() => {
+    toolSwitchAnim.value = true
+    toolSwitchAnimTimer = setTimeout(() => {
+      toolSwitchAnim.value = false
+    }, 450)
+  })
+}
+
+const imageSlamActive = ref(false)
+const imageSlamIntensity = ref<'full' | 'light'>('full')
+const slamEffectTarget = ref({
+  centerX: 0,
+  centerY: 0,
+  radius: 160,
+  particleDistance: 140,
+})
+let imageSlamTimer: ReturnType<typeof setTimeout> | null = null
+
+const SLAM_RING_BASE_SIZE = 24
+
+function prefersReducedMotion() {
+  return import.meta.client && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+function measureSlamTargetFromCanvas(): typeof slamEffectTarget.value | null {
+  const canvas = getCanvas()
+  if (!canvas) return null
+
+  const canvasRect = canvas.getBoundingClientRect()
+  if (canvasRect.width === 0 || canvasRect.height === 0) return null
+
+  const centerX = canvasRect.left + canvasRect.width / 2
+  const centerY = canvasRect.top + canvasRect.height / 2
+  const radius = (Math.hypot(canvasRect.width, canvasRect.height) / 2)
+  return { centerX, centerY, radius, particleDistance: radius * 0.88 }
+}
+
+function measureSlamTargetFromLayer(layer: ImageAnnotation): typeof slamEffectTarget.value | null {
+  const canvas = getCanvas()
+  if (!canvas || canvas.width === 0 || canvas.height === 0) return null
+
+  const canvasRect = canvas.getBoundingClientRect()
+  const scaleX = canvasRect.width / canvas.width
+  const scaleY = canvasRect.height / canvas.height
+
+  const displayW = layer.width * scaleX
+  const displayH = layer.height * scaleY
+  const layerLeft = canvasRect.left + layer.x * scaleX
+  const layerTop = canvasRect.top + layer.y * scaleY
+  const centerX = layerLeft + displayW / 2
+  const centerY = layerTop + displayH / 2
+  const radius = Math.hypot(displayW, displayH) / 2
+  return { centerX, centerY, radius, particleDistance: radius * 0.88 }
+}
+
+function playImageSlamEffect(intensity: 'full' | 'light' = 'full', layer?: ImageAnnotation) {
+  if (prefersReducedMotion()) return
+  if (imageSlamTimer) clearTimeout(imageSlamTimer)
+
+  const measured = layer ? measureSlamTargetFromLayer(layer) : measureSlamTargetFromCanvas()
+  if (measured) {
+    const sizeMultiplier = intensity === 'full' ? 1.35 : 1.2
+    measured.radius *= sizeMultiplier
+    measured.particleDistance = measured.radius * 0.9
+    slamEffectTarget.value = measured
+  }
+
+  imageSlamActive.value = false
+  imageSlamIntensity.value = intensity
+  nextTick(() => {
+    imageSlamActive.value = true
+    imageSlamTimer = setTimeout(() => {
+      imageSlamActive.value = false
+    }, intensity === 'full' ? 1080 : 980)
+  })
+}
+
+const slamImpactDelay = computed(() => (imageSlamIntensity.value === 'full' ? 0.24 : 0.2))
+
+function slamRingStyle(ringIndex: number) {
+  const target = slamEffectTarget.value
+  const endScale = (target.radius * 2) / SLAM_RING_BASE_SIZE
+  return {
+    left: `${target.centerX}px`,
+    top: `${target.centerY}px`,
+    '--slam-ring-end-scale': `${endScale}`,
+    animationDelay: `${slamImpactDelay.value + (ringIndex - 1) * 0.075}s`,
+  }
+}
+
+function slamParticleStyle(index: number) {
+  const target = slamEffectTarget.value
+  const angle = (index / 12) * Math.PI * 2 + (index % 3) * 0.35
+  const distance = target.particleDistance * (0.55 + (index % 5) * 0.11)
+  const size = imageSlamIntensity.value === 'full' ? 3 + (index % 4) : 2 + (index % 3)
+  return {
+    left: `${target.centerX}px`,
+    top: `${target.centerY}px`,
+    '--slam-angle': `${angle}rad`,
+    '--slam-distance': `${distance}px`,
+    width: `${size}px`,
+    height: `${size}px`,
+    animationDelay: `${slamImpactDelay.value + (index % 5) * 0.025}s`,
+  }
+}
+
+function slamFlashStyle() {
+  const target = slamEffectTarget.value
+  const size = target.radius * 2.2
+  return {
+    left: `${target.centerX}px`,
+    top: `${target.centerY}px`,
+    width: `${size}px`,
+    height: `${size}px`,
+    animationDelay: `${slamImpactDelay.value}s`,
+  }
+}
+
+function slamHandStyle() {
+  const target = slamEffectTarget.value
+  const width = Math.min(Math.max(target.radius * 1.5, 96), 340)
+  return {
+    left: `${target.centerX}px`,
+    top: `${target.centerY}px`,
+    width: `${width}px`,
+  }
+}
+
+const canvasCursorClass = computed(() => {
+  const cursors: Record<typeof toolMode.value, string> = {
+    pen: 'cursor-crosshair',
+    arrow: 'cursor-crosshair',
+    box: 'cursor-crosshair',
+    emoji: 'cursor-cell',
+    text: 'cursor-text',
+    move: 'cursor-grab active:cursor-grabbing',
+  }
+  return cursors[toolMode.value]
+})
 
 const showToolbarMenu = ref(false)
 const toolbarMenuRef = ref<HTMLDivElement | null>(null)
@@ -1015,6 +1516,10 @@ function handleKeydown(e: KeyboardEvent) {
   }
 
   if (e.key === 'Escape') {
+    if (showPasteDialog.value) {
+      cancelPasteDialog()
+      return
+    }
     closeToolbarMenu()
     return
   }
@@ -1034,17 +1539,36 @@ onMounted(() => {
   window.addEventListener('paste', handlePaste)
   window.addEventListener('keydown', handleKeydown)
   document.addEventListener('click', onDocumentClick)
+  window.addEventListener('resize', updateAllPickerIndicators)
 
-  canvasResizeObserver = new ResizeObserver(() => updateCanvasDisplaySize())
+  canvasResizeObserver = new ResizeObserver(() => {
+    updateCanvasDisplaySize()
+    updateAllPickerIndicators()
+  })
   if (canvasWrapperRef.value) canvasResizeObserver.observe(canvasWrapperRef.value)
+
+  updateAllPickerIndicators()
+})
+
+watch(hasImage, (loaded) => {
+  if (loaded) updateAllPickerIndicators()
+})
+
+watch(showToolbarMenu, (open) => {
+  if (open) nextTick(updateAllPickerIndicators)
 })
 
 onUnmounted(() => {
   window.removeEventListener('paste', handlePaste)
   window.removeEventListener('keydown', handleKeydown)
   document.removeEventListener('click', onDocumentClick)
+  window.removeEventListener('resize', updateAllPickerIndicators)
+  if (toolSwitchAnimTimer) clearTimeout(toolSwitchAnimTimer)
+  if (colorPickAnimTimer) clearTimeout(colorPickAnimTimer)
+  if (strokePickAnimTimer) clearTimeout(strokePickAnimTimer)
+  if (imageSlamTimer) clearTimeout(imageSlamTimer)
   canvasResizeObserver?.disconnect()
-  if (currentImageObjectUrl.value) URL.revokeObjectURL(currentImageObjectUrl.value)
+  clearImageResources()
 })
 </script>
 
@@ -1086,50 +1610,59 @@ onUnmounted(() => {
         <div class="hidden sm:block w-px h-5 mx-0.5 sm:mx-1.5 shrink-0" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
 
         <!-- Tool buttons group -->
-        <div class="flex min-w-0 shrink items-center gap-0.5 p-0.5 rounded-lg" :class="[isDark ? 'bg-zinc-800' : 'bg-slate-200']">
+        <div ref="toolStripRef" class="relative flex min-w-0 shrink items-center gap-0.5 p-0.5 rounded-lg" :class="[isDark ? 'bg-zinc-800' : 'bg-slate-200']">
+          <div
+            class="tool-indicator absolute top-0.5 bottom-0.5 rounded-md pointer-events-none shadow-sm"
+            :class="[isDark ? 'bg-zinc-600' : 'bg-slate-700']"
+            :style="toolIndicatorStyle"
+          />
           <button
             type="button"
-            :class="[toolMode === 'pen' ? (isDark ? 'bg-zinc-600' : 'bg-slate-700') + ' text-white shadow-sm' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300')]"
-            class="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+            :ref="(el) => registerToolButton('pen', el)"
+            :class="[toolMode === 'pen' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
+            class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
             :disabled="!hasImage"
             title="Pen (1)"
             @click="setToolMode('pen')"
           >
-            <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+            <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'pen' }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
             <span class="hidden sm:inline">Pen</span>
           </button>
           <button
             type="button"
-            :class="[toolMode === 'arrow' ? (isDark ? 'bg-zinc-600' : 'bg-slate-700') + ' text-white shadow-sm' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300')]"
-            class="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+            :ref="(el) => registerToolButton('arrow', el)"
+            :class="[toolMode === 'arrow' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
+            class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
             :disabled="!hasImage"
             title="Arrow (2)"
             @click="setToolMode('arrow')"
           >
-            <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
+            <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'arrow' }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
             <span class="hidden sm:inline">Arrow</span>
           </button>
           <button
             type="button"
-            :class="[toolMode === 'box' ? (isDark ? 'bg-zinc-600' : 'bg-slate-700') + ' text-white shadow-sm' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300')]"
-            class="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+            :ref="(el) => registerToolButton('box', el)"
+            :class="[toolMode === 'box' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
+            class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
             :disabled="!hasImage"
             title="Box (3)"
             @click="setToolMode('box')"
           >
-            <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" /></svg>
+            <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'box' }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" /></svg>
             <span class="hidden sm:inline">Box</span>
           </button>
-          <div class="relative">
+          <div class="relative z-10">
             <button
               type="button"
-              :class="[toolMode === 'emoji' ? (isDark ? 'bg-zinc-600' : 'bg-slate-700') + ' text-white shadow-sm' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300')]"
-              class="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+              :ref="(el) => registerToolButton('emoji', el)"
+              :class="[toolMode === 'emoji' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
+              class="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
               :disabled="!hasImage"
               title="Emoji"
               @click="toggleEmojiTool"
             >
-              <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path stroke-linecap="round" d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" stroke-width="3" stroke-linecap="round" /><line x1="15" y1="9" x2="15.01" y2="9" stroke-width="3" stroke-linecap="round" /></svg>
+              <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'emoji' }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path stroke-linecap="round" d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" stroke-width="3" stroke-linecap="round" /><line x1="15" y1="9" x2="15.01" y2="9" stroke-width="3" stroke-linecap="round" /></svg>
               <span class="hidden sm:inline">Emoji</span>
             </button>
             <div
@@ -1156,24 +1689,26 @@ onUnmounted(() => {
           </div>
           <button
             type="button"
-            :class="[toolMode === 'text' ? (isDark ? 'bg-zinc-600' : 'bg-slate-700') + ' text-white shadow-sm' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300')]"
-            class="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+            :ref="(el) => registerToolButton('text', el)"
+            :class="[toolMode === 'text' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
+            class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
             :disabled="!hasImage"
             title="Text (4)"
             @click="setToolMode('text')"
           >
-            <svg class="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 24 24"><path d="M3 7V5h18v2h-7v14h-4V7H3z" /></svg>
+            <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'text' }" fill="currentColor" viewBox="0 0 24 24"><path d="M3 7V5h18v2h-7v14h-4V7H3z" /></svg>
             <span class="hidden sm:inline">Text</span>
           </button>
           <button
             type="button"
-            :class="[toolMode === 'move' ? (isDark ? 'bg-zinc-600' : 'bg-slate-700') + ' text-white shadow-sm' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300')]"
-            class="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+            :ref="(el) => registerToolButton('move', el)"
+            :class="[toolMode === 'move' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
+            class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
             :disabled="!hasImage"
             title="Move (5)"
             @click="setToolMode('move')"
           >
-            <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
+            <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'move' }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
             <span class="hidden sm:inline">Move</span>
           </button>
         </div>
@@ -1183,20 +1718,26 @@ onUnmounted(() => {
         <!-- Colors (desktop) -->
         <div class="hidden xl:flex items-center gap-2 shrink-0">
           <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Color</span>
-          <div class="flex gap-2">
+          <div ref="colorStripRef" class="relative flex gap-2">
+            <div
+              class="color-indicator absolute rounded-full pointer-events-none ring-2 ring-offset-2"
+              :class="[isDark ? 'ring-white ring-offset-zinc-900' : 'ring-slate-800 ring-offset-white']"
+              :style="colorIndicatorStyle"
+            />
             <button
               v-for="color in colors"
               :key="color.value"
+              :ref="(el) => registerColorButton(color.value, el)"
               type="button"
-              class="w-6 h-6 rounded-full transition-all"
+              class="relative z-10 w-6 h-6 rounded-full transition-transform hover:scale-110 ring-1 disabled:opacity-30"
               :class="[
-                strokeColor === color.value ? 'ring-2 ring-offset-2 scale-110' : 'hover:scale-110 ring-1',
-                strokeColor === color.value ? (isDark ? 'ring-white ring-offset-zinc-900' : 'ring-slate-800 ring-offset-white') : (isDark ? 'ring-white/10 ring-offset-zinc-900' : 'ring-slate-300 ring-offset-white')
+                strokeColor !== color.value ? (isDark ? 'ring-white/10 ring-offset-zinc-900' : 'ring-slate-300 ring-offset-white') : 'ring-transparent',
+                colorPickAnim && strokeColor === color.value ? 'color-swatch-pop' : '',
               ]"
               :style="{ backgroundColor: color.value }"
               :title="color.name"
               :disabled="!hasImage"
-              @click="strokeColor = color.value"
+              @click="selectStrokeColor(color.value)"
             />
           </div>
         </div>
@@ -1206,18 +1747,28 @@ onUnmounted(() => {
         <!-- Stroke sizes (desktop) -->
         <div class="hidden xl:flex items-center gap-2 shrink-0">
           <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Stroke</span>
-          <div class="flex items-center gap-0.5 p-0.5 rounded-lg" :class="[isDark ? 'bg-zinc-800' : 'bg-slate-200']">
+          <div ref="strokeStripRef" class="relative flex items-center gap-0.5 p-0.5 rounded-lg" :class="[isDark ? 'bg-zinc-800' : 'bg-slate-200']">
+            <div
+              class="stroke-indicator absolute top-0.5 bottom-0.5 rounded-md pointer-events-none shadow-sm"
+              :class="[isDark ? 'bg-zinc-600' : 'bg-slate-700']"
+              :style="strokeIndicatorStyle"
+            />
             <button
               v-for="size in brushSizes"
               :key="size"
+              :ref="(el) => registerStrokeButton(size, el)"
               type="button"
-              class="flex items-center justify-center w-8 h-7 rounded-md transition-all"
-              :class="[strokeWidth === size ? (isDark ? 'bg-zinc-600' : 'bg-slate-700') + ' text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300')]"
+              class="relative z-10 flex items-center justify-center w-8 h-7 rounded-md transition-colors"
+              :class="[strokeWidth === size ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
               :disabled="!hasImage"
               :title="`${size}px`"
-              @click="strokeWidth = size"
+              @click="selectStrokeWidth(size)"
             >
-              <div class="rounded-full bg-current" :style="{ width: `${Math.min(size * 2.5, 14)}px`, height: `${Math.min(size * 2.5, 14)}px` }" />
+              <div
+                class="rounded-full bg-current"
+                :class="{ 'stroke-dot-pop': strokePickAnim && strokeWidth === size }"
+                :style="{ width: `${Math.min(size * 2.5, 14)}px`, height: `${Math.min(size * 2.5, 14)}px` }"
+              />
             </button>
           </div>
         </div>
@@ -1268,7 +1819,8 @@ onUnmounted(() => {
             type="button"
             class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium hover:text-red-500 hover:bg-red-500/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
             :class="[isDark ? 'text-zinc-400' : 'text-slate-600']"
-            :disabled="!hasImage"
+            title="Clear all and start over"
+            :disabled="!hasClearableContent"
             @click="clearAnnotations"
           >
             <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
@@ -1329,38 +1881,54 @@ onUnmounted(() => {
         >
           <div>
             <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Color</span>
-            <div class="flex flex-wrap gap-2 mt-2">
+            <div ref="colorMenuStripRef" class="relative flex flex-wrap gap-2 mt-2">
+              <div
+                class="color-indicator absolute rounded-full pointer-events-none ring-2 ring-offset-2"
+                :class="[isDark ? 'ring-white ring-offset-zinc-900' : 'ring-slate-800 ring-offset-white']"
+                :style="colorMenuIndicatorStyle"
+              />
               <button
                 v-for="color in colors"
                 :key="`menu-${color.value}`"
+                :ref="(el) => registerColorButton(color.value, el, true)"
                 type="button"
-                class="w-7 h-7 rounded-full transition-all"
+                class="relative z-10 w-7 h-7 rounded-full transition-transform hover:scale-110 ring-1 disabled:opacity-30"
                 :class="[
-                  strokeColor === color.value ? 'ring-2 ring-offset-2 scale-110' : 'hover:scale-110 ring-1',
-                  strokeColor === color.value ? (isDark ? 'ring-white ring-offset-zinc-900' : 'ring-slate-800 ring-offset-white') : (isDark ? 'ring-white/10 ring-offset-zinc-900' : 'ring-slate-300 ring-offset-white')
+                  strokeColor !== color.value ? (isDark ? 'ring-white/10 ring-offset-zinc-900' : 'ring-slate-300 ring-offset-white') : 'ring-transparent',
+                  colorPickAnim && strokeColor === color.value ? 'color-swatch-pop' : '',
                 ]"
                 :style="{ backgroundColor: color.value }"
                 :title="color.name"
                 :disabled="!hasImage"
-                @click="strokeColor = color.value"
+                @click="selectStrokeColor(color.value)"
               />
             </div>
           </div>
 
           <div>
             <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Stroke</span>
-            <div class="flex items-center gap-0.5 p-0.5 rounded-lg mt-2 w-fit" :class="[isDark ? 'bg-zinc-800' : 'bg-slate-200']">
+            <div ref="strokeMenuStripRef" class="relative flex items-center gap-0.5 p-0.5 rounded-lg mt-2 w-fit" :class="[isDark ? 'bg-zinc-800' : 'bg-slate-200']">
+              <div
+                class="stroke-indicator absolute top-0.5 bottom-0.5 rounded-md pointer-events-none shadow-sm"
+                :class="[isDark ? 'bg-zinc-600' : 'bg-slate-700']"
+                :style="strokeMenuIndicatorStyle"
+              />
               <button
                 v-for="size in brushSizes"
                 :key="`menu-${size}`"
+                :ref="(el) => registerStrokeButton(size, el, true)"
                 type="button"
-                class="flex items-center justify-center w-9 h-8 rounded-md transition-all"
-                :class="[strokeWidth === size ? (isDark ? 'bg-zinc-600' : 'bg-slate-700') + ' text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300')]"
+                class="relative z-10 flex items-center justify-center w-9 h-8 rounded-md transition-colors"
+                :class="[strokeWidth === size ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
                 :disabled="!hasImage"
                 :title="`${size}px`"
-                @click="strokeWidth = size"
+                @click="selectStrokeWidth(size)"
               >
-                <div class="rounded-full bg-current" :style="{ width: `${Math.min(size * 2.5, 14)}px`, height: `${Math.min(size * 2.5, 14)}px` }" />
+                <div
+                  class="rounded-full bg-current"
+                  :class="{ 'stroke-dot-pop': strokePickAnim && strokeWidth === size }"
+                  :style="{ width: `${Math.min(size * 2.5, 14)}px`, height: `${Math.min(size * 2.5, 14)}px` }"
+                />
               </button>
             </div>
           </div>
@@ -1403,8 +1971,9 @@ onUnmounted(() => {
               type="button"
               class="flex flex-1 items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium hover:text-red-500 hover:bg-red-500/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
               :class="[isDark ? 'text-zinc-400' : 'text-slate-600']"
-              :disabled="!hasImage"
-              @click="clearAnnotations(); closeToolbarMenu()"
+              title="Clear all and start over"
+              :disabled="!hasClearableContent"
+              @click="clearAnnotations()"
             >
               <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
               Clear
@@ -1417,7 +1986,11 @@ onUnmounted(() => {
       <div
         ref="canvasWrapperRef"
         class="relative flex-1 min-h-0 border rounded-xl shadow-sm overflow-hidden flex items-center justify-center transition-colors duration-200"
-        :class="[isDark ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-slate-200']"
+        :class="[
+          isDark ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-slate-200',
+          imageSlamActive && imageSlamIntensity === 'full' ? 'canvas-jolt' : '',
+        ]"
+        :style="imageSlamActive && imageSlamIntensity === 'full' ? { animationDelay: `${slamImpactDelay}s` } : undefined"
       >
         <!-- Empty state -->
         <div v-if="!hasImage" class="absolute inset-0 flex flex-col items-center justify-center gap-5 text-center px-8">
@@ -1448,7 +2021,14 @@ onUnmounted(() => {
         <canvas
           v-show="hasImage"
           ref="canvasRef"
-          class="block cursor-crosshair"
+          class="block origin-center"
+          :class="[
+            canvasCursorClass,
+            toolSwitchAnim && !imageSlamActive ? 'canvas-tool-pop' : '',
+            imageSlamActive
+              ? (imageSlamIntensity === 'full' ? 'canvas-slam-enter' : 'canvas-slam-enter-light')
+              : '',
+          ]"
           @mousedown="startDrawing"
           @mousemove="draw"
           @mouseup="stopDrawing"
@@ -1493,9 +2073,394 @@ onUnmounted(() => {
           class="absolute bottom-4 left-1/2 -translate-x-1/2 text-xs backdrop-blur-sm px-3 py-1.5 rounded-full shadow-lg pointer-events-none border"
           :class="[isDark ? 'text-zinc-400 bg-zinc-900/90 border-zinc-800' : 'text-slate-600 bg-white/90 border-slate-200']"
         >
-          Drag to move · drag handle to resize
+          Drag to move · drag corners to resize layers · drag handle to resize
         </div>
       </div>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="imageSlamActive"
+        class="fixed inset-0 z-[55] overflow-visible pointer-events-none"
+        aria-hidden="true"
+      >
+        <div
+          v-for="ring in 3"
+          :key="`slam-ring-${ring}`"
+          class="slam-dust-ring"
+          :class="[isDark ? 'slam-dust-ring-dark' : 'slam-dust-ring-light']"
+          :style="slamRingStyle(ring)"
+        />
+        <div
+          v-for="particle in (imageSlamIntensity === 'full' ? 14 : 8)"
+          :key="`slam-particle-${particle}`"
+          class="slam-dust-particle"
+          :class="[isDark ? 'bg-zinc-400/70' : 'bg-slate-500/60']"
+          :style="slamParticleStyle(particle)"
+        />
+        <div
+          class="slam-impact-flash"
+          :class="[
+            isDark ? 'slam-impact-flash-dark' : 'slam-impact-flash-light',
+            imageSlamIntensity === 'light' ? 'slam-impact-flash-sm' : '',
+          ]"
+          :style="slamFlashStyle()"
+        />
+        <div
+          class="slam-hand"
+          :class="[imageSlamIntensity === 'full' ? 'slam-hand-full' : 'slam-hand-light']"
+          :style="slamHandStyle()"
+        >
+          <svg viewBox="0 0 150 184" class="w-full h-auto drop-shadow-[0_6px_8px_rgba(0,0,0,0.35)]">
+            <!-- Black outline layer: shapes drawn larger via wide black stroke -->
+            <g fill="#161616" stroke="#161616" stroke-width="9" stroke-linejoin="round">
+              <rect x="32" y="14" width="86" height="40" rx="14" />
+              <rect x="33" y="40" width="84" height="62" rx="26" />
+              <rect x="38" y="92" width="20" height="74" rx="10" />
+              <rect x="59" y="94" width="20" height="84" rx="10" />
+              <rect x="80" y="94" width="20" height="82" rx="10" />
+              <rect x="101" y="92" width="20" height="70" rx="10" />
+              <g transform="rotate(34 30 74)">
+                <rect x="13" y="56" width="21" height="52" rx="10" />
+              </g>
+            </g>
+            <!-- White glove fill: same shapes, original size, no stroke -->
+            <g fill="#ffffff">
+              <rect x="32" y="14" width="86" height="40" rx="14" />
+              <rect x="33" y="40" width="84" height="62" rx="26" />
+              <rect x="38" y="92" width="20" height="74" rx="10" />
+              <rect x="59" y="94" width="20" height="84" rx="10" />
+              <rect x="80" y="94" width="20" height="82" rx="10" />
+              <rect x="101" y="92" width="20" height="70" rx="10" />
+              <g transform="rotate(34 30 74)">
+                <rect x="13" y="56" width="21" height="52" rx="10" />
+              </g>
+            </g>
+            <!-- Cuff seam + back-of-hand darts -->
+            <g fill="none" stroke="#161616" stroke-width="4" stroke-linecap="round">
+              <path d="M34 52 q41 14 82 0" />
+              <path d="M60 60 l-3 26" />
+              <path d="M75 62 l0 26" />
+              <path d="M90 60 l3 26" />
+            </g>
+          </svg>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="showPasteDialog"
+        class="fixed inset-0 z-50 flex items-center justify-center p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="paste-dialog-title"
+      >
+        <div class="absolute inset-0 bg-black/50" @click="cancelPasteDialog" />
+        <div
+          class="relative w-full max-w-sm rounded-xl border p-5 shadow-2xl"
+          :class="[isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-slate-200']"
+        >
+          <h2
+            id="paste-dialog-title"
+            class="text-base font-semibold"
+            :class="[isDark ? 'text-zinc-100' : 'text-slate-900']"
+          >
+            Add image
+          </h2>
+          <p class="mt-2 text-sm" :class="[isDark ? 'text-zinc-400' : 'text-slate-600']">
+            An image is already loaded. Replace it or add the new image as a layer on top?
+          </p>
+          <div class="mt-5 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+            <button
+              type="button"
+              class="flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              :class="[isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-800']"
+              @click="confirmReplaceImage"
+            >
+              Replace
+            </button>
+            <button
+              type="button"
+              class="flex-1 px-4 py-2 rounded-lg text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
+              @click="confirmAddImageLayer"
+            >
+              Add as layer
+            </button>
+            <button
+              type="button"
+              class="flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100']"
+              @click="cancelPasteDialog"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
+
+<style scoped>
+.tool-indicator,
+.color-indicator,
+.stroke-indicator {
+  transition:
+    left 0.28s cubic-bezier(0.34, 1.2, 0.64, 1),
+    top 0.28s cubic-bezier(0.34, 1.2, 0.64, 1),
+    width 0.28s cubic-bezier(0.34, 1.2, 0.64, 1),
+    height 0.28s cubic-bezier(0.34, 1.2, 0.64, 1),
+    opacity 0.15s ease;
+}
+
+.tool-icon-pop {
+  animation: tool-icon-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.color-swatch-pop {
+  animation: color-swatch-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.stroke-dot-pop {
+  animation: stroke-dot-pop 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes tool-icon-pop {
+  0% { transform: scale(1) rotate(0deg); }
+  35% { transform: scale(1.35) rotate(-12deg); }
+  70% { transform: scale(0.92) rotate(4deg); }
+  100% { transform: scale(1) rotate(0deg); }
+}
+
+@keyframes color-swatch-pop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.28); }
+  100% { transform: scale(1); }
+}
+
+@keyframes stroke-dot-pop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.5); }
+  100% { transform: scale(1); }
+}
+
+.canvas-tool-pop {
+  animation: canvas-pop 0.4s cubic-bezier(0.34, 1.2, 0.64, 1);
+}
+
+@keyframes canvas-pop {
+  0%, 100% { transform: scale(1); }
+  35% { transform: scale(1.006); }
+}
+
+.canvas-jolt {
+  animation: canvas-jolt 0.48s cubic-bezier(0.36, 0.07, 0.19, 0.97);
+}
+
+@keyframes canvas-jolt {
+  0%, 100% { transform: translate(0, 0); }
+  12% { transform: translate(-4px, 3px); }
+  24% { transform: translate(5px, -3px); }
+  36% { transform: translate(-3px, -4px); }
+  48% { transform: translate(3px, 2px); }
+  60% { transform: translate(-2px, 1px); }
+}
+
+.canvas-slam-enter {
+  animation: canvas-slam 0.52s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.canvas-slam-enter-light {
+  animation: canvas-slam-light 0.42s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes canvas-slam {
+  0% {
+    transform: scale(1.12) translateY(-36px);
+    opacity: 0.65;
+    filter: blur(3px);
+  }
+  50% {
+    transform: scale(0.97) translateY(6px);
+    opacity: 1;
+    filter: blur(0);
+  }
+  72% {
+    transform: scale(1.015) translateY(-3px);
+  }
+  100% {
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes canvas-slam-light {
+  0% {
+    transform: scale(1.06) translateY(-14px);
+    opacity: 0.85;
+  }
+  55% {
+    transform: scale(0.99) translateY(3px);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1) translateY(0);
+  }
+}
+
+.slam-dust-ring {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 1px solid;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.08);
+  animation: slam-ring 0.72s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.slam-dust-ring-light {
+  border-color: rgb(148 163 184 / 0.55);
+}
+
+.slam-dust-ring-dark {
+  border-color: rgb(161 161 170 / 0.5);
+}
+
+@keyframes slam-ring {
+  0% {
+    transform: translate(-50%, -50%) scale(0.08);
+    opacity: 0.85;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(var(--slam-ring-end-scale, 12));
+    opacity: 0;
+  }
+}
+
+.slam-dust-particle {
+  position: absolute;
+  border-radius: 9999px;
+  opacity: 0;
+  animation: slam-particle 0.58s ease-out forwards;
+}
+
+@keyframes slam-particle {
+  0% {
+    transform: translate(-50%, -50%) rotate(var(--slam-angle)) translateX(0) scale(1);
+    opacity: 0.85;
+  }
+  100% {
+    transform: translate(-50%, -50%) rotate(var(--slam-angle)) translateX(var(--slam-distance)) scale(0.2);
+    opacity: 0;
+  }
+}
+
+.slam-impact-flash {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  opacity: 0;
+  animation: slam-flash 0.38s ease-out forwards;
+}
+
+.slam-impact-flash-light {
+  background: radial-gradient(circle at center, rgb(255 255 255 / 0.45) 0%, transparent 62%);
+}
+
+.slam-impact-flash-dark {
+  background: radial-gradient(circle at center, rgb(255 255 255 / 0.18) 0%, transparent 62%);
+}
+
+.slam-impact-flash-sm {
+  animation-duration: 0.28s;
+}
+
+@keyframes slam-flash {
+  0% { opacity: 0; }
+  18% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* Cartoon glove anchored bottom-center over the image; animated Y added in keyframes */
+.slam-hand {
+  position: absolute;
+  transform-origin: center bottom;
+  will-change: transform, opacity;
+}
+
+.slam-hand-full {
+  animation: slam-hand-full 0.72s cubic-bezier(0.33, 0, 0.2, 1) forwards;
+}
+
+.slam-hand-light {
+  animation: slam-hand-light 0.52s cubic-bezier(0.33, 0, 0.2, 1) forwards;
+}
+
+@keyframes slam-hand-full {
+  0% {
+    transform: translate(-50%, -240%) rotate(-9deg) scale(1.06);
+    opacity: 0;
+  }
+  16% { opacity: 1; }
+  36% {
+    transform: translate(-50%, -100%) rotate(0deg) scale(1);
+    opacity: 1;
+  }
+  46% {
+    transform: translate(-50%, -108%) rotate(0deg) scale(1);
+    opacity: 1;
+  }
+  60% {
+    transform: translate(-50%, -100%) rotate(2deg) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -250%) rotate(8deg) scale(1.04);
+    opacity: 0;
+  }
+}
+
+@keyframes slam-hand-light {
+  0% {
+    transform: translate(-50%, -220%) rotate(-7deg) scale(1.04);
+    opacity: 0;
+  }
+  20% { opacity: 1; }
+  42% {
+    transform: translate(-50%, -100%) rotate(0deg) scale(1);
+    opacity: 1;
+  }
+  60% {
+    transform: translate(-50%, -106%) rotate(1deg) scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -230%) rotate(6deg) scale(1.02);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-indicator,
+  .color-indicator,
+  .stroke-indicator {
+    transition: none;
+  }
+
+  .tool-icon-pop,
+  .color-swatch-pop,
+  .stroke-dot-pop,
+  .canvas-tool-pop,
+  .canvas-jolt,
+  .canvas-slam-enter,
+  .canvas-slam-enter-light,
+  .slam-dust-ring,
+  .slam-dust-particle,
+  .slam-impact-flash,
+  .slam-hand-full,
+  .slam-hand-light {
+    animation: none !important;
+  }
+}
+</style>
