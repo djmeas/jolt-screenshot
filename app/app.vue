@@ -98,9 +98,13 @@ const canUndo = computed(() => annotationHistory.value.length > 0)
 
 const colors = [
   { name: 'Red', value: '#ef4444' },
+  { name: 'Orange', value: '#f97316' },
   { name: 'Yellow', value: '#eab308' },
   { name: 'Green', value: '#22c55e' },
-  { name: 'Black', value: '#000000' }
+  { name: 'Blue', value: '#3b82f6' },
+  { name: 'Purple', value: '#a855f7' },
+  { name: 'Black', value: '#000000' },
+  { name: 'White', value: '#ffffff' },
 ]
 
 const brushSizes = [2, 4, 8, 12]
@@ -215,6 +219,20 @@ function getCanvasContext() {
 
 function getCanvas() {
   return canvasRef.value
+}
+
+function updateCanvasDisplaySize() {
+  const canvas = getCanvas()
+  const wrapper = canvasWrapperRef.value
+  if (!canvas || !wrapper || !hasImage.value || canvas.width === 0 || canvas.height === 0) return
+
+  const maxW = wrapper.clientWidth
+  const maxH = wrapper.clientHeight
+  if (maxW === 0 || maxH === 0) return
+
+  const scale = Math.min(maxW / canvas.width, maxH / canvas.height)
+  canvas.style.width = `${Math.floor(canvas.width * scale)}px`
+  canvas.style.height = `${Math.floor(canvas.height * scale)}px`
 }
 
 function getCanvasCoords(e: MouseEvent | TouchEvent) {
@@ -382,6 +400,7 @@ function loadImageToCanvas(url: string) {
     resizeStartValue.value = null
     hoveredAnnotationIndex.value = null
     redrawCanvas()
+    nextTick(() => updateCanvasDisplaySize())
   }
   img.src = url
 }
@@ -916,23 +935,115 @@ function onCanvasMouseLeave() {
   if (toolMode.value === 'move' && !moveDragging.value && !resizeDragging.value) redrawCanvas()
 }
 
+function isEditableTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null
+  if (!el) return false
+  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable
+}
+
+function setToolMode(mode: typeof toolMode.value) {
+  if (!hasImage.value) return
+
+  toolMode.value = mode
+  boxStart.value = null
+  boxPreview.value = null
+  showEmojiPicker.value = false
+  pendingEmoji.value = null
+  selectedArrowIndex.value = null
+  moveDragging.value = false
+  moveTargetIndex.value = null
+  moveStartPos.value = null
+  resizeDragging.value = false
+  resizeTargetIndex.value = null
+  resizeStartPos.value = null
+  resizeStartValue.value = null
+  hoveredAnnotationIndex.value = null
+
+  if (textInputVisible.value && mode !== 'text') {
+    textInputVisible.value = false
+    textInputCanvasPos.value = null
+    textInputValue.value = ''
+  }
+
+  if (mode === 'move') redrawCanvas()
+}
+
+const showToolbarMenu = ref(false)
+const toolbarMenuRef = ref<HTMLDivElement | null>(null)
+const toolbarMenuButtonRef = ref<HTMLButtonElement | null>(null)
+
+function closeToolbarMenu() {
+  showToolbarMenu.value = false
+}
+
+function toggleToolbarMenu() {
+  showToolbarMenu.value = !showToolbarMenu.value
+}
+
+function toggleEmojiTool() {
+  if (!hasImage.value) return
+  if (toolMode.value === 'emoji' && showEmojiPicker.value) {
+    showEmojiPicker.value = false
+    return
+  }
+  setToolMode('emoji')
+  showEmojiPicker.value = true
+}
+
+function onDocumentClick(e: MouseEvent) {
+  if (!showToolbarMenu.value) return
+  const target = e.target as Node
+  if (toolbarMenuRef.value?.contains(target) || toolbarMenuButtonRef.value?.contains(target)) return
+  closeToolbarMenu()
+}
+
+const TOOL_SHORTCUTS: Record<string, typeof toolMode.value> = {
+  '1': 'pen',
+  '2': 'arrow',
+  '3': 'box',
+  '4': 'text',
+  '5': 'move',
+}
+
 function handleKeydown(e: KeyboardEvent) {
+  if (isEditableTarget(e.target)) return
+
   if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
-    const target = e.target as HTMLElement
-    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
     e.preventDefault()
     undo()
+    return
+  }
+
+  if (e.key === 'Escape') {
+    closeToolbarMenu()
+    return
+  }
+
+  if (e.metaKey || e.ctrlKey || e.altKey) return
+
+  const mode = TOOL_SHORTCUTS[e.key]
+  if (mode) {
+    e.preventDefault()
+    setToolMode(mode)
   }
 }
+
+let canvasResizeObserver: ResizeObserver | null = null
 
 onMounted(() => {
   window.addEventListener('paste', handlePaste)
   window.addEventListener('keydown', handleKeydown)
+  document.addEventListener('click', onDocumentClick)
+
+  canvasResizeObserver = new ResizeObserver(() => updateCanvasDisplaySize())
+  if (canvasWrapperRef.value) canvasResizeObserver.observe(canvasWrapperRef.value)
 })
 
 onUnmounted(() => {
   window.removeEventListener('paste', handlePaste)
   window.removeEventListener('keydown', handleKeydown)
+  document.removeEventListener('click', onDocumentClick)
+  canvasResizeObserver?.disconnect()
   if (currentImageObjectUrl.value) URL.revokeObjectURL(currentImageObjectUrl.value)
 })
 </script>
@@ -946,16 +1057,16 @@ onUnmounted(() => {
     <div class="w-full flex-1 flex flex-col min-h-0 p-3 gap-2">
       <!-- Toolbar -->
       <div
-        class="relative z-10 flex flex-wrap items-center gap-1 px-3 py-2 rounded-xl border shadow-xl transition-colors duration-200"
+        class="relative z-10 flex items-center gap-1 px-2 sm:px-3 py-2 rounded-xl border shadow-xl min-w-0 transition-colors duration-200"
         :class="[isDark ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-slate-200']"
       >
 
         <!-- App brand -->
-        <div class="flex items-center mr-2">
+        <div class="flex shrink-0 items-center mr-1 sm:mr-2">
           <img
             :src="logoImg"
             alt="JoltShot"
-            class="h-7 w-auto transition-[filter] duration-200"
+            class="h-6 sm:h-7 w-auto transition-[filter] duration-200"
             :class="[isDark ? '' : 'invert']"
           />
         </div>
@@ -963,7 +1074,7 @@ onUnmounted(() => {
         <!-- Theme toggle -->
         <button
           type="button"
-          class="flex items-center justify-center w-8 h-8 rounded-lg transition-colors"
+          class="flex shrink-0 items-center justify-center w-8 h-8 rounded-lg transition-colors"
           :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100']"
           :title="isDark ? 'Switch to light mode' : 'Switch to dark mode'"
           @click="setColorMode(!isDark)"
@@ -972,50 +1083,54 @@ onUnmounted(() => {
           <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>
         </button>
 
-        <div class="w-px h-5 mx-1.5" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
+        <div class="hidden sm:block w-px h-5 mx-0.5 sm:mx-1.5 shrink-0" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
 
         <!-- Tool buttons group -->
-        <div class="flex items-center gap-0.5 p-0.5 rounded-lg" :class="[isDark ? 'bg-zinc-800' : 'bg-slate-200']">
+        <div class="flex min-w-0 shrink items-center gap-0.5 p-0.5 rounded-lg" :class="[isDark ? 'bg-zinc-800' : 'bg-slate-200']">
           <button
             type="button"
             :class="[toolMode === 'pen' ? (isDark ? 'bg-zinc-600' : 'bg-slate-700') + ' text-white shadow-sm' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300')]"
-            class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+            class="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
             :disabled="!hasImage"
-            @click="toolMode = 'pen'; boxStart = null; boxPreview = null; showEmojiPicker = false; pendingEmoji = null; moveDragging = false; moveTargetIndex = null; moveStartPos = null; resizeDragging = false; resizeTargetIndex = null; hoveredAnnotationIndex = null"
+            title="Pen (1)"
+            @click="setToolMode('pen')"
           >
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-            Pen
+            <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+            <span class="hidden sm:inline">Pen</span>
           </button>
           <button
             type="button"
             :class="[toolMode === 'arrow' ? (isDark ? 'bg-zinc-600' : 'bg-slate-700') + ' text-white shadow-sm' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300')]"
-            class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+            class="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
             :disabled="!hasImage"
-            @click="toolMode = 'arrow'; selectedArrowIndex = null; boxStart = null; boxPreview = null; showEmojiPicker = false; pendingEmoji = null; moveDragging = false; moveTargetIndex = null; moveStartPos = null; resizeDragging = false; resizeTargetIndex = null; hoveredAnnotationIndex = null"
+            title="Arrow (2)"
+            @click="setToolMode('arrow')"
           >
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
-            Arrow
+            <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
+            <span class="hidden sm:inline">Arrow</span>
           </button>
           <button
             type="button"
             :class="[toolMode === 'box' ? (isDark ? 'bg-zinc-600' : 'bg-slate-700') + ' text-white shadow-sm' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300')]"
-            class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+            class="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
             :disabled="!hasImage"
-            @click="toolMode = 'box'; boxStart = null; boxPreview = null; selectedArrowIndex = null; showEmojiPicker = false; pendingEmoji = null; moveDragging = false; moveTargetIndex = null; moveStartPos = null; resizeDragging = false; resizeTargetIndex = null; hoveredAnnotationIndex = null"
+            title="Box (3)"
+            @click="setToolMode('box')"
           >
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" /></svg>
-            Box
+            <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" /></svg>
+            <span class="hidden sm:inline">Box</span>
           </button>
           <div class="relative">
             <button
               type="button"
               :class="[toolMode === 'emoji' ? (isDark ? 'bg-zinc-600' : 'bg-slate-700') + ' text-white shadow-sm' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300')]"
-              class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+              class="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
               :disabled="!hasImage"
-              @click="toolMode = 'emoji'; boxStart = null; boxPreview = null; showEmojiPicker = !showEmojiPicker; moveDragging = false; moveTargetIndex = null; moveStartPos = null; resizeDragging = false; resizeTargetIndex = null; hoveredAnnotationIndex = null"
+              title="Emoji"
+              @click="toggleEmojiTool"
             >
-              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path stroke-linecap="round" d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" stroke-width="3" stroke-linecap="round" /><line x1="15" y1="9" x2="15.01" y2="9" stroke-width="3" stroke-linecap="round" /></svg>
-              Emoji
+              <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path stroke-linecap="round" d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" stroke-width="3" stroke-linecap="round" /><line x1="15" y1="9" x2="15.01" y2="9" stroke-width="3" stroke-linecap="round" /></svg>
+              <span class="hidden sm:inline">Emoji</span>
             </button>
             <div
               v-if="showEmojiPicker"
@@ -1042,31 +1157,33 @@ onUnmounted(() => {
           <button
             type="button"
             :class="[toolMode === 'text' ? (isDark ? 'bg-zinc-600' : 'bg-slate-700') + ' text-white shadow-sm' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300')]"
-            class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+            class="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
             :disabled="!hasImage"
-            @click="toolMode = 'text'; boxStart = null; boxPreview = null; showEmojiPicker = false; pendingEmoji = null; moveDragging = false; moveTargetIndex = null; moveStartPos = null; resizeDragging = false; resizeTargetIndex = null; hoveredAnnotationIndex = null"
+            title="Text (4)"
+            @click="setToolMode('text')"
           >
-            <svg class="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M3 7V5h18v2h-7v14h-4V7H3z" /></svg>
-            Text
+            <svg class="w-3.5 h-3.5 shrink-0" fill="currentColor" viewBox="0 0 24 24"><path d="M3 7V5h18v2h-7v14h-4V7H3z" /></svg>
+            <span class="hidden sm:inline">Text</span>
           </button>
           <button
             type="button"
             :class="[toolMode === 'move' ? (isDark ? 'bg-zinc-600' : 'bg-slate-700') + ' text-white shadow-sm' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300')]"
-            class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
+            class="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-all"
             :disabled="!hasImage"
-            @click="toolMode = 'move'; boxStart = null; boxPreview = null; showEmojiPicker = false; pendingEmoji = null; selectedArrowIndex = null; resizeDragging = false; resizeTargetIndex = null"
+            title="Move (5)"
+            @click="setToolMode('move')"
           >
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
-            Move
+            <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
+            <span class="hidden sm:inline">Move</span>
           </button>
         </div>
 
-        <div class="w-px h-5 mx-1.5" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
+        <div class="hidden xl:block w-px h-5 mx-1.5 shrink-0" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
 
-        <!-- Colors -->
-        <div class="flex items-center gap-2">
+        <!-- Colors (desktop) -->
+        <div class="hidden xl:flex items-center gap-2 shrink-0">
           <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Color</span>
-          <div class="flex gap-3">
+          <div class="flex gap-2">
             <button
               v-for="color in colors"
               :key="color.value"
@@ -1077,16 +1194,17 @@ onUnmounted(() => {
                 strokeColor === color.value ? (isDark ? 'ring-white ring-offset-zinc-900' : 'ring-slate-800 ring-offset-white') : (isDark ? 'ring-white/10 ring-offset-zinc-900' : 'ring-slate-300 ring-offset-white')
               ]"
               :style="{ backgroundColor: color.value }"
+              :title="color.name"
               :disabled="!hasImage"
               @click="strokeColor = color.value"
             />
           </div>
         </div>
 
-        <div class="w-px h-5 mx-1.5" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
+        <div class="hidden xl:block w-px h-5 mx-1.5 shrink-0" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
 
-        <!-- Stroke sizes -->
-        <div class="flex items-center gap-2">
+        <!-- Stroke sizes (desktop) -->
+        <div class="hidden xl:flex items-center gap-2 shrink-0">
           <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Stroke</span>
           <div class="flex items-center gap-0.5 p-0.5 rounded-lg" :class="[isDark ? 'bg-zinc-800' : 'bg-slate-200']">
             <button
@@ -1104,20 +1222,20 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- Text font size (text tool only) -->
+        <!-- Text font size (desktop, text tool only) -->
         <template v-if="toolMode === 'text'">
-          <div class="w-px h-5 mx-1.5" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
-          <div class="flex items-center gap-2">
+          <div class="hidden xl:block w-px h-5 mx-1.5 shrink-0" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
+          <div class="hidden xl:flex items-center gap-2 shrink-0">
             <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Size</span>
             <input v-model.number="textFontSize" type="range" min="12" max="48" class="w-20 h-1.5 accent-indigo-500" />
             <span class="text-xs tabular-nums" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">{{ textFontSize }}px</span>
           </div>
         </template>
 
-        <!-- Arrow pivot (when arrow selected) -->
+        <!-- Arrow pivot (desktop, when arrow selected) -->
         <template v-if="selectedArrow != null">
-          <div class="w-px h-5 mx-1.5" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
-          <div class="flex items-center gap-2">
+          <div class="hidden xl:block w-px h-5 mx-1.5 shrink-0" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
+          <div class="hidden xl:flex items-center gap-2 shrink-0">
             <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Pivot</span>
             <input
               type="range"
@@ -1131,45 +1249,168 @@ onUnmounted(() => {
           </div>
         </template>
 
-        <div class="flex-1" />
+        <div class="hidden xl:block flex-1 min-w-2" />
 
-        <!-- Undo -->
-        <button
-          type="button"
-          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-          :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100']"
-          :disabled="!hasImage || !canUndo"
-          title="Undo (⌘Z / Ctrl+Z)"
-          @click="undo"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
-          Undo
-        </button>
+        <!-- Undo / Clear / Copy (desktop) -->
+        <div class="hidden xl:flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+            :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100']"
+            :disabled="!hasImage || !canUndo"
+            title="Undo (⌘Z / Ctrl+Z)"
+            @click="undo"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
+            Undo
+          </button>
+          <button
+            type="button"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium hover:text-red-500 hover:bg-red-500/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+            :class="[isDark ? 'text-zinc-400' : 'text-slate-600']"
+            :disabled="!hasImage"
+            @click="clearAnnotations"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+            Clear
+          </button>
+          <button
+            type="button"
+            class="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            :class="[copied ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white']"
+            :disabled="!hasImage"
+            @click="copyToClipboard"
+          >
+            <svg v-if="!copied" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+            <svg v-else class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
+            {{ copied ? 'Copied!' : 'Copy to Clipboard' }}
+          </button>
+        </div>
 
-        <!-- Clear -->
-        <button
-          type="button"
-          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium hover:text-red-500 hover:bg-red-500/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-          :class="[isDark ? 'text-zinc-400' : 'text-slate-600']"
-          :disabled="!hasImage"
-          @click="clearAnnotations"
-        >
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-          Clear
-        </button>
+        <!-- Compact actions + overflow menu (mobile / tablet) -->
+        <div class="flex xl:hidden items-center gap-1 ml-auto shrink-0">
+          <button
+            type="button"
+            class="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-lg text-xs font-semibold transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            :class="[copied ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white']"
+            :disabled="!hasImage"
+            :title="copied ? 'Copied!' : 'Copy to Clipboard'"
+            @click="copyToClipboard"
+          >
+            <svg v-if="!copied" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+            <svg v-else class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
+            <span class="hidden sm:inline">{{ copied ? 'Copied!' : 'Copy' }}</span>
+          </button>
+          <button
+            ref="toolbarMenuButtonRef"
+            type="button"
+            class="flex items-center justify-center w-8 h-8 rounded-lg transition-colors"
+            :class="[
+              showToolbarMenu
+                ? (isDark ? 'bg-zinc-700 text-zinc-200' : 'bg-slate-200 text-slate-800')
+                : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100')
+            ]"
+            title="More options"
+            aria-label="More options"
+            :aria-expanded="showToolbarMenu"
+            @click.stop="toggleToolbarMenu"
+          >
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.5" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" /><circle cx="12" cy="19" r="1.5" fill="currentColor" stroke="none" /></svg>
+          </button>
+        </div>
 
-        <!-- Copy to Clipboard -->
-        <button
-          type="button"
-          class="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-          :class="[copied ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white']"
-          :disabled="!hasImage"
-          @click="copyToClipboard"
+        <!-- Overflow menu panel -->
+        <div
+          v-if="showToolbarMenu"
+          ref="toolbarMenuRef"
+          class="absolute top-full right-2 sm:right-3 mt-2 z-30 w-72 max-w-[calc(100vw-1.5rem)] rounded-xl shadow-2xl border p-3 space-y-3 xl:hidden"
+          :class="[isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-slate-200']"
+          @click.stop
         >
-          <svg v-if="!copied" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
-          <svg v-else class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
-          {{ copied ? 'Copied!' : 'Copy to Clipboard' }}
-        </button>
+          <div>
+            <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Color</span>
+            <div class="flex flex-wrap gap-2 mt-2">
+              <button
+                v-for="color in colors"
+                :key="`menu-${color.value}`"
+                type="button"
+                class="w-7 h-7 rounded-full transition-all"
+                :class="[
+                  strokeColor === color.value ? 'ring-2 ring-offset-2 scale-110' : 'hover:scale-110 ring-1',
+                  strokeColor === color.value ? (isDark ? 'ring-white ring-offset-zinc-900' : 'ring-slate-800 ring-offset-white') : (isDark ? 'ring-white/10 ring-offset-zinc-900' : 'ring-slate-300 ring-offset-white')
+                ]"
+                :style="{ backgroundColor: color.value }"
+                :title="color.name"
+                :disabled="!hasImage"
+                @click="strokeColor = color.value"
+              />
+            </div>
+          </div>
+
+          <div>
+            <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Stroke</span>
+            <div class="flex items-center gap-0.5 p-0.5 rounded-lg mt-2 w-fit" :class="[isDark ? 'bg-zinc-800' : 'bg-slate-200']">
+              <button
+                v-for="size in brushSizes"
+                :key="`menu-${size}`"
+                type="button"
+                class="flex items-center justify-center w-9 h-8 rounded-md transition-all"
+                :class="[strokeWidth === size ? (isDark ? 'bg-zinc-600' : 'bg-slate-700') + ' text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300')]"
+                :disabled="!hasImage"
+                :title="`${size}px`"
+                @click="strokeWidth = size"
+              >
+                <div class="rounded-full bg-current" :style="{ width: `${Math.min(size * 2.5, 14)}px`, height: `${Math.min(size * 2.5, 14)}px` }" />
+              </button>
+            </div>
+          </div>
+
+          <div v-if="toolMode === 'text'">
+            <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Text size</span>
+            <div class="flex items-center gap-2 mt-2">
+              <input v-model.number="textFontSize" type="range" min="12" max="48" class="flex-1 h-1.5 accent-indigo-500" />
+              <span class="text-xs tabular-nums w-10 text-right" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">{{ textFontSize }}px</span>
+            </div>
+          </div>
+
+          <div v-if="selectedArrow != null">
+            <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Pivot</span>
+            <div class="flex items-center gap-2 mt-2">
+              <input
+                type="range"
+                min="-180"
+                max="180"
+                :value="selectedArrowAngleDeg"
+                class="flex-1 h-1.5 accent-indigo-500"
+                @input="updateSelectedArrowAngle(Number(($event.target as HTMLInputElement).value))"
+              />
+              <span class="text-xs tabular-nums w-10 text-right" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">{{ selectedArrowAngleDeg }}°</span>
+            </div>
+          </div>
+
+          <div class="flex gap-2 pt-1 border-t" :class="[isDark ? 'border-zinc-800' : 'border-slate-200']">
+            <button
+              type="button"
+              class="flex flex-1 items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+              :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100']"
+              :disabled="!hasImage || !canUndo"
+              @click="undo(); closeToolbarMenu()"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
+              Undo
+            </button>
+            <button
+              type="button"
+              class="flex flex-1 items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium hover:text-red-500 hover:bg-red-500/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+              :class="[isDark ? 'text-zinc-400' : 'text-slate-600']"
+              :disabled="!hasImage"
+              @click="clearAnnotations(); closeToolbarMenu()"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+              Clear
+            </button>
+          </div>
+        </div>
       </div>
 
       <!-- Canvas / Placeholder -->
@@ -1207,7 +1448,7 @@ onUnmounted(() => {
         <canvas
           v-show="hasImage"
           ref="canvasRef"
-          class="max-w-full h-auto block cursor-crosshair"
+          class="block cursor-crosshair"
           @mousedown="startDrawing"
           @mousemove="draw"
           @mouseup="stopDrawing"
