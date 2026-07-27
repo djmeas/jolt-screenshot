@@ -376,6 +376,37 @@ function onCanvasWheel(e: WheelEvent) {
   zoomBy(ZOOM_STEP ** -Math.sign(e.deltaY), { x: e.clientX, y: e.clientY })
 }
 
+const navigatorViewport = computed(() => {
+  const canvas = getCanvas()
+  const wrapper = canvasWrapperRef.value
+  if (!canvas || !wrapper || !hasImage.value || displayScale.value <= 0) {
+    return { x: 0, y: 0, w: 0, h: 0 }
+  }
+  return {
+    x: viewX.value,
+    y: viewY.value,
+    w: wrapper.clientWidth / displayScale.value,
+    h: wrapper.clientHeight / displayScale.value,
+  }
+})
+
+function drawNavigatorThumbnail(ctx: CanvasRenderingContext2D, _scale: number) {
+  const base = baseImage.value
+  const canvas = getCanvas()
+  if (!base || !canvas) return
+  ctx.drawImage(base.image, 0, 0, canvas.width, canvas.height)
+  drawAnnotations(ctx)
+}
+
+function onNavigatorPan(imageX: number, imageY: number) {
+  const canvas = getCanvas()
+  const wrapper = canvasWrapperRef.value
+  if (!canvas || !wrapper || !hasImage.value || displayScale.value <= 0) return
+  viewX.value = imageX - wrapper.clientWidth / displayScale.value / 2
+  viewY.value = imageY - wrapper.clientHeight / displayScale.value / 2
+  applyZoomTransform()
+}
+
 function getCanvasCoords(e: MouseEvent | TouchEvent) {
   const canvas = getCanvas()
   if (!canvas) return { x: 0, y: 0 }
@@ -2649,6 +2680,17 @@ onUnmounted(() => {
             @click="zoomToActual"
           >1:1</button>
         </div>
+
+        <!-- Navigator (zoomed-in overview) -->
+        <ZoomNavigator
+          v-if="isZoomed && baseImage"
+          :image="baseImage.image"
+          :annotations="annotations"
+          :is-dark="isDark"
+          :viewport="navigatorViewport"
+          :draw-thumbnail="drawNavigatorThumbnail"
+          @pan="onNavigatorPan"
+        />
       </div>
     </div>
 
