@@ -27,6 +27,17 @@ const showEmojiPicker = ref(false)
 const emojiSize = ref(32)
 const textFontSize = ref(24)
 
+// Zoom & pan state (view-only; never affects the exported image)
+const ZOOM_STEP = 1.15
+const ZOOM_MAX_SCALE = 8
+const fitScale = ref(1)
+const zoomFactor = ref(1)
+const viewX = ref(0)
+const viewY = ref(0)
+const spacePanActive = ref(false)
+const isPanning = ref(false)
+const panStart = ref<{ x: number, y: number, viewX: number, viewY: number } | null>(null)
+
 // Tool mode: pen | arrow | box | emoji | text | move
 const toolMode = ref<'pen' | 'arrow' | 'box' | 'emoji' | 'text' | 'move'>('pen')
 
@@ -250,7 +261,27 @@ function getCanvas() {
   return canvasRef.value
 }
 
-function updateCanvasDisplaySize() {
+const displayScale = computed(() => fitScale.value * zoomFactor.value)
+const isZoomed = computed(() => zoomFactor.value > 1.001)
+const zoomPercent = computed(() => Math.round(displayScale.value * 100))
+
+function clampView() {
+  const canvas = getCanvas()
+  const wrapper = canvasWrapperRef.value
+  if (!canvas || !wrapper || canvas.width === 0 || canvas.height === 0) {
+    viewX.value = 0
+    viewY.value = 0
+    return
+  }
+  const scale = displayScale.value
+  if (scale <= 0) return
+  const maxX = canvas.width - wrapper.clientWidth / scale
+  const maxY = canvas.height - wrapper.clientHeight / scale
+  viewX.value = maxX <= 0 ? 0 : Math.min(Math.max(viewX.value, 0), maxX)
+  viewY.value = maxY <= 0 ? 0 : Math.min(Math.max(viewY.value, 0), maxY)
+}
+
+function applyZoomTransform() {
   const canvas = getCanvas()
   const wrapper = canvasWrapperRef.value
   if (!canvas || !wrapper || !hasImage.value || canvas.width === 0 || canvas.height === 0) return
@@ -259,9 +290,32 @@ function updateCanvasDisplaySize() {
   const maxH = wrapper.clientHeight
   if (maxW === 0 || maxH === 0) return
 
-  const scale = Math.min(maxW / canvas.width, maxH / canvas.height, 1)
-  canvas.style.width = `${Math.floor(canvas.width * scale)}px`
-  canvas.style.height = `${Math.floor(canvas.height * scale)}px`
+  fitScale.value = Math.min(maxW / canvas.width, maxH / canvas.height, 1)
+  clampView()
+
+  const scale = displayScale.value
+  const displayW = Math.floor(canvas.width * scale)
+  const displayH = Math.floor(canvas.height * scale)
+  const baseLeft = displayW < maxW ? (maxW - displayW) / 2 : 0
+  const baseTop = displayH < maxH ? (maxH - displayH) / 2 : 0
+
+  canvas.style.width = `${displayW}px`
+  canvas.style.height = `${displayH}px`
+  canvas.style.left = `${baseLeft - viewX.value * scale}px`
+  canvas.style.top = `${baseTop - viewY.value * scale}px`
+}
+
+function updateCanvasDisplaySize() {
+  applyZoomTransform()
+}
+
+function resetZoom() {
+  zoomFactor.value = 1
+  viewX.value = 0
+  viewY.value = 0
+  spacePanActive.value = false
+  isPanning.value = false
+  panStart.value = null
 }
 
 function getCanvasCoords(e: MouseEvent | TouchEvent) {
@@ -525,6 +579,7 @@ async function replaceWithImage(fileOrUrl: File | string) {
     baseImage.value = { objectUrl, image: img }
     hasImage.value = true
     resetDrawingState()
+    resetZoom()
     redrawCanvas()
     nextTick(() => {
       updateCanvasDisplaySize()
@@ -607,7 +662,10 @@ function clearAnnotations({ keepSaved = false, resetProject = true }: { keepSave
     canvas.height = 0
     canvas.style.width = ''
     canvas.style.height = ''
+    canvas.style.left = ''
+    canvas.style.top = ''
   }
+  resetZoom()
   if (autoSaveTimer) {
     clearTimeout(autoSaveTimer)
     autoSaveTimer = null
@@ -1280,6 +1338,7 @@ async function loadSavedProjectIntoCanvas(id: string) {
     const objectUrl = URL.createObjectURL(await (await fetch(saved.baseImage.dataUrl)).blob())
     baseImage.value = { objectUrl, image: img }
     hasImage.value = true
+    resetZoom()
 
     for (const layer of saved.layers) {
       try {
@@ -1856,9 +1915,11 @@ onUnmounted(() => {
     <div class="w-full flex-1 flex flex-col min-h-0 p-3 gap-2">
       <!-- Toolbar -->
       <div
-        class="relative z-10 flex flex-wrap items-center gap-1 px-2 sm:px-3 py-2 rounded-xl border shadow-xl min-w-0 transition-colors duration-200"
+        class="relative z-10 flex flex-col rounded-xl border shadow-xl min-w-0 px-2 sm:px-3 py-2 transition-colors duration-200"
         :class="[isDark ? 'bg-zinc-900 border-zinc-800' : 'bg-white border-slate-200']"
       >
+        <!-- Row 1: brand, theme, Saves, tool strip, Undo/Clear/Copy -->
+        <div class="flex flex-wrap items-center gap-1">
 
         <!-- App brand -->
         <div class="flex shrink-0 items-center mr-1 sm:mr-2">
@@ -2009,8 +2070,52 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <div class="hidden xl:block w-px h-5 mx-1.5 shrink-0" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
+        <div class="hidden xl:block flex-1 min-w-2" />
 
+        <!-- Undo / Clear / Copy (desktop) -->
+        <div class="hidden xl:flex items-center gap-1 shrink-0">
+          <button
+            type="button"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+            :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100']"
+            :disabled="!hasImage || !canUndo"
+            title="Undo (⌘Z / Ctrl+Z)"
+            @click="undo"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
+            Undo
+          </button>
+          <button
+            type="button"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium hover:text-red-500 hover:bg-red-500/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+            :class="[isDark ? 'text-zinc-400' : 'text-slate-600']"
+            title="Clear all and start over"
+            :disabled="!hasClearableContent"
+            @click="confirmClearWithSave"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+            Clear
+          </button>
+          <button
+            type="button"
+            class="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            :class="[copied ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white']"
+            :disabled="!hasImage"
+            @click="copyToClipboard"
+          >
+            <svg v-if="!copied" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+            <svg v-else class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
+            {{ copied ? 'Copied!' : 'Copy to Clipboard' }}
+          </button>
+        </div>
+
+        </div>
+
+        <!-- Row 2: color, stroke, conditional text size, conditional arrow pivot -->
+        <div
+          class="hidden xl:flex flex-wrap items-center gap-1 mt-1.5 pt-1.5 border-t"
+          :class="[isDark ? 'border-zinc-800' : 'border-slate-200']"
+        >
         <!-- Colors (desktop) -->
         <div class="hidden xl:flex items-center gap-2 shrink-0">
           <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Color</span>
@@ -2095,44 +2200,6 @@ onUnmounted(() => {
             <span class="text-xs tabular-nums w-8" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">{{ selectedArrowAngleDeg }}°</span>
           </div>
         </template>
-
-        <div class="hidden xl:block flex-1 min-w-2" />
-
-        <!-- Undo / Clear / Copy (desktop) -->
-        <div class="hidden xl:flex items-center gap-1 shrink-0">
-          <button
-            type="button"
-            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-            :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100']"
-            :disabled="!hasImage || !canUndo"
-            title="Undo (⌘Z / Ctrl+Z)"
-            @click="undo"
-          >
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" /></svg>
-            Undo
-          </button>
-          <button
-            type="button"
-            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium hover:text-red-500 hover:bg-red-500/10 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-            :class="[isDark ? 'text-zinc-400' : 'text-slate-600']"
-            title="Clear all and start over"
-            :disabled="!hasClearableContent"
-            @click="confirmClearWithSave"
-          >
-            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-            Clear
-          </button>
-          <button
-            type="button"
-            class="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-            :class="[copied ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-indigo-600 hover:bg-indigo-500 text-white']"
-            :disabled="!hasImage"
-            @click="copyToClipboard"
-          >
-            <svg v-if="!copied" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
-            <svg v-else class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
-            {{ copied ? 'Copied!' : 'Copy to Clipboard' }}
-          </button>
         </div>
 
         <!-- Compact actions + overflow menu (mobile / tablet) -->
@@ -2364,7 +2431,7 @@ onUnmounted(() => {
         <canvas
           v-show="hasImage"
           ref="canvasRef"
-          class="block origin-center"
+          class="absolute block origin-center"
           :class="[
             canvasCursorClass,
             imageSlamActive
