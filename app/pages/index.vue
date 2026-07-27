@@ -318,6 +318,57 @@ function resetZoom() {
   panStart.value = null
 }
 
+function zoomBy(factor: number, anchorClient?: { x: number, y: number }) {
+  const canvas = getCanvas()
+  const wrapper = canvasWrapperRef.value
+  if (!canvas || !wrapper || !hasImage.value) return
+
+  const oldScale = displayScale.value
+  const newScale = Math.min(Math.max(oldScale * factor, fitScale.value), ZOOM_MAX_SCALE)
+  if (newScale === oldScale) return
+
+  let ax = wrapper.clientWidth / 2
+  let ay = wrapper.clientHeight / 2
+  if (anchorClient) {
+    const rect = wrapper.getBoundingClientRect()
+    ax = anchorClient.x - rect.left
+    ay = anchorClient.y - rect.top
+  }
+
+  const oldDisplayW = canvas.width * oldScale
+  const oldDisplayH = canvas.height * oldScale
+  const oldBaseLeft = oldDisplayW < wrapper.clientWidth ? (wrapper.clientWidth - oldDisplayW) / 2 : 0
+  const oldBaseTop = oldDisplayH < wrapper.clientHeight ? (wrapper.clientHeight - oldDisplayH) / 2 : 0
+
+  const imagePtX = viewX.value + (ax - oldBaseLeft) / oldScale
+  const imagePtY = viewY.value + (ay - oldBaseTop) / oldScale
+
+  zoomFactor.value = newScale / fitScale.value
+
+  const newDisplayW = canvas.width * newScale
+  const newDisplayH = canvas.height * newScale
+  const newBaseLeft = newDisplayW < wrapper.clientWidth ? (wrapper.clientWidth - newDisplayW) / 2 : 0
+  const newBaseTop = newDisplayH < wrapper.clientHeight ? (wrapper.clientHeight - newDisplayH) / 2 : 0
+
+  viewX.value = imagePtX - (ax - newBaseLeft) / newScale
+  viewY.value = imagePtY - (ay - newBaseTop) / newScale
+
+  applyZoomTransform()
+}
+
+function zoomToFit() {
+  if (!hasImage.value) return
+  zoomFactor.value = 1
+  viewX.value = 0
+  viewY.value = 0
+  applyZoomTransform()
+}
+
+function zoomToActual() {
+  if (!hasImage.value || displayScale.value <= 0) return
+  zoomBy(1 / displayScale.value)
+}
+
 function getCanvasCoords(e: MouseEvent | TouchEvent) {
   const canvas = getCanvas()
   if (!canvas) return { x: 0, y: 0 }
@@ -2483,6 +2534,47 @@ onUnmounted(() => {
           :class="[isDark ? 'text-zinc-400 bg-zinc-900/90 border-zinc-800' : 'text-slate-600 bg-white/90 border-slate-200']"
         >
           Drag to move · drag corners to resize layers · drag handle to resize
+        </div>
+
+        <!-- Zoom controls -->
+        <div
+          v-if="hasImage"
+          class="absolute bottom-4 left-4 z-10 flex items-center gap-1 backdrop-blur-sm px-2 py-1 rounded-full shadow-lg border"
+          :class="[isDark ? 'bg-zinc-900/90 border-zinc-800' : 'bg-white/90 border-slate-200']"
+        >
+          <button
+            type="button"
+            class="flex items-center justify-center w-7 h-7 rounded-md text-sm font-medium transition-colors"
+            :class="[isDark ? 'text-zinc-300 hover:bg-zinc-800' : 'text-slate-600 hover:bg-slate-100']"
+            title="Zoom out (⌘-)"
+            @click="zoomBy(1 / ZOOM_STEP)"
+          >−</button>
+          <span
+            class="text-xs tabular-nums text-center min-w-[3.5rem] select-none"
+            :class="[isDark ? 'text-zinc-400' : 'text-slate-500']"
+          >{{ zoomPercent }}%</span>
+          <button
+            type="button"
+            class="flex items-center justify-center w-7 h-7 rounded-md text-sm font-medium transition-colors"
+            :class="[isDark ? 'text-zinc-300 hover:bg-zinc-800' : 'text-slate-600 hover:bg-slate-100']"
+            title="Zoom in (⌘+)"
+            @click="zoomBy(ZOOM_STEP)"
+          >+</button>
+          <div class="w-px h-4 mx-0.5" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
+          <button
+            type="button"
+            class="flex items-center justify-center px-2 h-7 rounded-md text-xs font-medium transition-colors"
+            :class="[isDark ? 'text-zinc-300 hover:bg-zinc-800' : 'text-slate-600 hover:bg-slate-100']"
+            title="Fit to window (⌘0)"
+            @click="zoomToFit"
+          >Fit</button>
+          <button
+            type="button"
+            class="flex items-center justify-center px-2 h-7 rounded-md text-xs font-medium transition-colors"
+            :class="[isDark ? 'text-zinc-300 hover:bg-zinc-800' : 'text-slate-600 hover:bg-slate-100']"
+            title="Actual size (⌘1)"
+            @click="zoomToActual"
+          >1:1</button>
         </div>
       </div>
     </div>
