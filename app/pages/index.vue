@@ -743,6 +743,14 @@ function clearAnnotations({ keepSaved = false, resetProject = true }: { keepSave
 function startDrawing(e: MouseEvent | TouchEvent) {
   e.preventDefault()
   if (!hasImage.value) return
+
+  if (spacePanActive.value) {
+    const pt = 'touches' in e ? e.touches[0] : e
+    panStart.value = { x: pt.clientX, y: pt.clientY, viewX: viewX.value, viewY: viewY.value }
+    isPanning.value = true
+    return
+  }
+
   const { x, y } = getCanvasCoords(e)
 
   if (toolMode.value === 'move') {
@@ -814,6 +822,15 @@ function startDrawing(e: MouseEvent | TouchEvent) {
 function draw(e: MouseEvent | TouchEvent) {
   e.preventDefault()
   if (!hasImage.value) return
+
+  if (isPanning.value && panStart.value) {
+    const pt = 'touches' in e ? e.touches[0] : e
+    viewX.value = panStart.value.viewX - (pt.clientX - panStart.value.x) / displayScale.value
+    viewY.value = panStart.value.viewY - (pt.clientY - panStart.value.y) / displayScale.value
+    applyZoomTransform()
+    return
+  }
+
   const { x, y } = getCanvasCoords(e)
 
   if (toolMode.value === 'pen' && isDrawing.value) {
@@ -857,6 +874,11 @@ function draw(e: MouseEvent | TouchEvent) {
 
 function stopDrawing(e: MouseEvent | TouchEvent) {
   e.preventDefault()
+  if (isPanning.value) {
+    isPanning.value = false
+    panStart.value = null
+    return
+  }
   if (toolMode.value === 'pen' && isDrawing.value) {
     if (currentPath.value.length >= 2) {
       pushAnnotationState()
@@ -931,6 +953,7 @@ const pendingEmoji = ref<{ emoji: string, size: number } | null>(null)
 
 function onCanvasClick(e: MouseEvent) {
   if (!hasImage.value) return
+  if (spacePanActive.value) return
   if (toolMode.value === 'move') return
   const { x, y } = getCanvasCoords(e)
 
@@ -1835,6 +1858,8 @@ function slamHandStyle() {
 }
 
 const canvasCursorClass = computed(() => {
+  if (isPanning.value) return 'cursor-grabbing'
+  if (spacePanActive.value) return 'cursor-grab'
   const cursors: Record<typeof toolMode.value, string> = {
     pen: 'cursor-crosshair',
     arrow: 'cursor-crosshair',
@@ -1927,6 +1952,12 @@ function handleKeydown(e: KeyboardEvent) {
 
   if (e.metaKey || e.ctrlKey || e.altKey) return
 
+  if (e.key === ' ' && hasImage.value && isZoomed.value && !spacePanActive.value) {
+    e.preventDefault()
+    spacePanActive.value = true
+    return
+  }
+
   const mode = TOOL_SHORTCUTS[e.key]
   if (mode) {
     e.preventDefault()
@@ -1938,11 +1969,20 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
+function handleKeyup(e: KeyboardEvent) {
+  if (e.key === ' ') {
+    spacePanActive.value = false
+    isPanning.value = false
+    panStart.value = null
+  }
+}
+
 let canvasResizeObserver: ResizeObserver | null = null
 
 onMounted(() => {
   window.addEventListener('paste', handlePaste)
   window.addEventListener('keydown', handleKeydown)
+  window.addEventListener('keyup', handleKeyup)
   document.addEventListener('click', onDocumentClick)
   window.addEventListener('resize', updateAllPickerIndicators)
   canvasWrapperRef.value?.addEventListener('wheel', onCanvasWheel, { passive: false })
@@ -1976,6 +2016,7 @@ watch([textFontSize, emojiSize], () => {
 onUnmounted(() => {
   window.removeEventListener('paste', handlePaste)
   window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('keyup', handleKeyup)
   document.removeEventListener('click', onDocumentClick)
   window.removeEventListener('resize', updateAllPickerIndicators)
   canvasWrapperRef.value?.removeEventListener('wheel', onCanvasWheel)
