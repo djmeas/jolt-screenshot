@@ -1893,6 +1893,29 @@ function handleKeydown(e: KeyboardEvent) {
     return
   }
 
+  if ((e.metaKey || e.ctrlKey) && hasImage.value) {
+    if (e.key === '=' || e.key === '+') {
+      e.preventDefault()
+      zoomBy(ZOOM_STEP)
+      return
+    }
+    if (e.key === '-') {
+      e.preventDefault()
+      zoomBy(1 / ZOOM_STEP)
+      return
+    }
+    if (e.key === '0') {
+      e.preventDefault()
+      zoomToFit()
+      return
+    }
+    if (e.key === '1') {
+      e.preventDefault()
+      zoomToActual()
+      return
+    }
+  }
+
   if (e.key === 'Escape') {
     if (showPasteDialog.value) {
       cancelPasteDialog()
