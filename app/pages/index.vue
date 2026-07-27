@@ -369,6 +369,13 @@ function zoomToActual() {
   zoomBy(1 / displayScale.value)
 }
 
+function onCanvasWheel(e: WheelEvent) {
+  if (!hasImage.value) return
+  if (!e.ctrlKey && !e.metaKey) return
+  e.preventDefault()
+  zoomBy(ZOOM_STEP ** -Math.sign(e.deltaY), { x: e.clientX, y: e.clientY })
+}
+
 function getCanvasCoords(e: MouseEvent | TouchEvent) {
   const canvas = getCanvas()
   if (!canvas) return { x: 0, y: 0 }
@@ -1915,6 +1922,7 @@ onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
   document.addEventListener('click', onDocumentClick)
   window.addEventListener('resize', updateAllPickerIndicators)
+  canvasWrapperRef.value?.addEventListener('wheel', onCanvasWheel, { passive: false })
 
   canvasResizeObserver = new ResizeObserver(() => {
     updateCanvasDisplaySize()
@@ -1947,6 +1955,7 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
   document.removeEventListener('click', onDocumentClick)
   window.removeEventListener('resize', updateAllPickerIndicators)
+  canvasWrapperRef.value?.removeEventListener('wheel', onCanvasWheel)
   if (toolSwitchAnimTimer) clearTimeout(toolSwitchAnimTimer)
   if (colorPickAnimTimer) clearTimeout(colorPickAnimTimer)
   if (strokePickAnimTimer) clearTimeout(strokePickAnimTimer)
