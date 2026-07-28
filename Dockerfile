@@ -1,19 +1,22 @@
 # Build stage
 FROM node:22-alpine AS build
 
+# Install pnpm
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
 WORKDIR /app
 
 # Copy package files
-COPY package*.json ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 
 # Install dependencies
-RUN npm ci
+RUN pnpm install --frozen-lockfile
 
 # Copy source code
 COPY . .
 
 # Generate static site (output in .output/public)
-RUN npm run generate
+RUN pnpm generate
 
 # Production stage
 FROM nginx:alpine AS production
