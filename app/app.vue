@@ -1965,6 +1965,19 @@ onUnmounted(() => {
                 :style="colorMenuIndicatorStyle"
               />
               <button
+                :ref="(el) => { registerColorButton(CUSTOM_COLOR_KEY, el, true); customMenuSwatchRef = (el instanceof HTMLButtonElement) ? el : null }"
+                type="button"
+                class="relative z-10 w-7 h-7 rounded-full transition-transform hover:scale-110 ring-1 disabled:opacity-30"
+                :class="[
+                  resolveColorButtonKey(strokeColor) !== CUSTOM_COLOR_KEY ? (isDark ? 'ring-white/10 ring-offset-zinc-900' : 'ring-slate-300 ring-offset-white') : 'ring-transparent',
+                  colorPickAnim && resolveColorButtonKey(strokeColor) === CUSTOM_COLOR_KEY ? 'color-swatch-pop' : '',
+                ]"
+                :style="customSwatchStyle"
+                title="Custom color"
+                :disabled="!hasImage"
+                @click="toggleColorPicker('menu')"
+              />
+              <button
                 v-for="color in colors"
                 :key="`menu-${color.value}`"
                 :ref="(el) => registerColorButton(color.value, el, true)"
@@ -1979,6 +1992,18 @@ onUnmounted(() => {
                 :disabled="!hasImage"
                 @click="selectStrokeColor(color.value)"
               />
+              <div
+                v-if="showColorPicker && colorPickerAnchor === 'menu'"
+                ref="colorPickerWrapRef"
+                class="absolute top-full left-0 mt-2 z-50"
+              >
+                <ColorPickerPopover
+                  :model-value="strokeColor"
+                  :is-dark="isDark"
+                  @update:model-value="onCustomColorUpdate"
+                  @close="closeColorPicker"
+                />
+              </div>
             </div>
           </div>
 
