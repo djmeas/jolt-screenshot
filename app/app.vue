@@ -130,6 +130,47 @@ const colors = [
   { name: 'White', value: '#ffffff' },
 ]
 
+const CUSTOM_COLOR_KEY = '__custom__'
+const RAINBOW_GRADIENT = 'conic-gradient(from 0deg, #ef4444, #f97316, #eab308, #22c55e, #3b82f6, #a855f7, #ef4444)'
+
+const customColor = ref<string | null>(null)
+const showColorPicker = ref(false)
+const colorPickerAnchor = ref<'toolbar' | 'menu' | null>(null)
+const customSwatchRef = ref<HTMLButtonElement | null>(null)
+const customMenuSwatchRef = ref<HTMLButtonElement | null>(null)
+const colorPickerWrapRef = ref<HTMLDivElement | null>(null)
+
+const customSwatchStyle = computed<Record<string, string>>(() => {
+  if (!customColor.value) return { backgroundImage: RAINBOW_GRADIENT, backgroundColor: '#ffffff' }
+  return colorOverCheckerStyle(customColor.value)
+})
+
+function toggleColorPicker(anchor: 'toolbar' | 'menu') {
+  if (!hasImage.value) return
+  if (showColorPicker.value && colorPickerAnchor.value === anchor) {
+    closeColorPicker()
+    return
+  }
+  colorPickerAnchor.value = anchor
+  showColorPicker.value = true
+}
+
+function closeColorPicker() {
+  showColorPicker.value = false
+}
+
+function onCustomColorUpdate(value: string) {
+  if (!hasImage.value) return
+  customColor.value = value
+  strokeColor.value = value
+  playColorPickEffect()
+  updateAllColorIndicators()
+}
+
+function resolveColorButtonKey(color: string): string {
+  return colors.some(c => c.value === color) ? color : CUSTOM_COLOR_KEY
+}
+
 const brushSizes = [2, 4, 8, 12]
 
 const EMOJI_LIST = [
@@ -1241,7 +1282,7 @@ function updateColorIndicator(
 ) {
   nextTick(() => {
     const strip = stripRef.value
-    const btn = buttonMap.get(strokeColor.value)
+    const btn = buttonMap.get(resolveColorButtonKey(strokeColor.value))
     if (!strip || !btn) return
     const stripRect = strip.getBoundingClientRect()
     const btnRect = btn.getBoundingClientRect()
@@ -1492,8 +1533,14 @@ function toggleEmojiTool() {
 }
 
 function onDocumentClick(e: MouseEvent) {
-  if (!showToolbarMenu.value) return
   const target = e.target as Node
+  if (showColorPicker.value) {
+    const inside = colorPickerWrapRef.value?.contains(target)
+      || customSwatchRef.value?.contains(target)
+      || customMenuSwatchRef.value?.contains(target)
+    if (!inside) closeColorPicker()
+  }
+  if (!showToolbarMenu.value) return
   if (toolbarMenuRef.value?.contains(target) || toolbarMenuButtonRef.value?.contains(target)) return
   closeToolbarMenu()
 }
@@ -1518,6 +1565,10 @@ function handleKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') {
     if (showPasteDialog.value) {
       cancelPasteDialog()
+      return
+    }
+    if (showColorPicker.value) {
+      closeColorPicker()
       return
     }
     closeToolbarMenu()
@@ -1556,6 +1607,7 @@ watch(hasImage, (loaded) => {
 
 watch(showToolbarMenu, (open) => {
   if (open) nextTick(updateAllPickerIndicators)
+  if (!open && colorPickerAnchor.value === 'menu') closeColorPicker()
 })
 
 onUnmounted(() => {
@@ -1725,6 +1777,19 @@ onUnmounted(() => {
               :style="colorIndicatorStyle"
             />
             <button
+              :ref="(el) => { registerColorButton(CUSTOM_COLOR_KEY, el); customSwatchRef = (el instanceof HTMLButtonElement) ? el : null }"
+              type="button"
+              class="relative z-10 w-6 h-6 rounded-full transition-transform hover:scale-110 ring-1 disabled:opacity-30"
+              :class="[
+                resolveColorButtonKey(strokeColor) !== CUSTOM_COLOR_KEY ? (isDark ? 'ring-white/10 ring-offset-zinc-900' : 'ring-slate-300 ring-offset-white') : 'ring-transparent',
+                colorPickAnim && resolveColorButtonKey(strokeColor) === CUSTOM_COLOR_KEY ? 'color-swatch-pop' : '',
+              ]"
+              :style="customSwatchStyle"
+              title="Custom color"
+              :disabled="!hasImage"
+              @click="toggleColorPicker('toolbar')"
+            />
+            <button
               v-for="color in colors"
               :key="color.value"
               :ref="(el) => registerColorButton(color.value, el)"
@@ -1739,6 +1804,18 @@ onUnmounted(() => {
               :disabled="!hasImage"
               @click="selectStrokeColor(color.value)"
             />
+            <div
+              v-if="showColorPicker && colorPickerAnchor === 'toolbar'"
+              ref="colorPickerWrapRef"
+              class="absolute top-full left-0 mt-2 z-50"
+            >
+              <ColorPickerPopover
+                :model-value="strokeColor"
+                :is-dark="isDark"
+                @update:model-value="onCustomColorUpdate"
+                @close="closeColorPicker"
+              />
+            </div>
           </div>
         </div>
 
