@@ -2912,7 +2912,7 @@ onUnmounted(() => {
       >
         <div class="absolute inset-0 bg-black/50" @click="cancelPasteDialog" />
         <div
-          class="relative w-full max-w-sm rounded-xl border p-5 shadow-2xl"
+          class="relative w-full max-w-lg rounded-xl border p-5 shadow-2xl"
           :class="[isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-slate-200']"
         >
           <h2
@@ -2932,7 +2932,7 @@ onUnmounted(() => {
           <div class="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
             <button
               type="button"
-              class="flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              class="flex-1 whitespace-nowrap px-3 py-2 rounded-lg text-sm font-medium transition-colors"
               :class="[isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-800']"
               @click="confirmReplaceImage"
             >
@@ -2940,14 +2940,14 @@ onUnmounted(() => {
             </button>
             <button
               type="button"
-              class="flex-1 px-4 py-2 rounded-lg text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
+              class="flex-1 whitespace-nowrap px-3 py-2 rounded-lg text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
               @click="confirmAppendImage"
             >
               Append to right
             </button>
             <button
               type="button"
-              class="flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              class="flex-1 whitespace-nowrap px-3 py-2 rounded-lg text-sm font-medium transition-colors"
               :class="[isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-800']"
               @click="confirmAddImageLayer"
             >
@@ -2955,7 +2955,7 @@ onUnmounted(() => {
             </button>
             <button
               type="button"
-              class="flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              class="flex-1 whitespace-nowrap px-3 py-2 rounded-lg text-sm font-medium transition-colors"
               :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100']"
               @click="cancelPasteDialog"
             >
