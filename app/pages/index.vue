@@ -994,7 +994,7 @@ function draw(e: MouseEvent | TouchEvent) {
     moveStartPos.value = { x, y }
     redrawCanvas()
   } else if (toolMode.value === 'move' && resizeDragging.value && resizeTargetIndex.value !== null) {
-    resizeAnnotation(resizeTargetIndex.value, x, y)
+    resizeAnnotation(resizeTargetIndex.value, x, y, e.shiftKey)
     redrawCanvas()
   } else if (toolMode.value === 'move' && !moveDragging.value && !resizeDragging.value) {
     const newHover = getHoveredAnnotationForMoveMode(x, y)
@@ -1297,7 +1297,7 @@ function translateAnnotation(index: number, dx: number, dy: number) {
   annotations.value = next
 }
 
-function resizeAnnotation(index: number, canvasX: number, canvasY: number) {
+function resizeAnnotation(index: number, canvasX: number, canvasY: number, preserveAspect = false) {
   const ann = annotations.value[index]
   const start = resizeStartPos.value
   const startVal = resizeStartValue.value
@@ -1310,8 +1310,14 @@ function resizeAnnotation(index: number, canvasX: number, canvasY: number) {
     const angle = Math.atan2(dy, dx)
     next[index] = { ...ann, length, angle }
   } else if (ann.type === 'box' && startVal.width != null && startVal.height != null) {
-    const newWidth = Math.max(8, canvasX - ann.x)
-    const newHeight = Math.max(8, canvasY - ann.y)
+    const minSize = 8
+    let newWidth = Math.max(minSize, canvasX - ann.x)
+    let newHeight = Math.max(minSize, canvasY - ann.y)
+    if (preserveAspect && startVal.width > 0 && startVal.height > 0) {
+      const scale = Math.max(newWidth / startVal.width, newHeight / startVal.height)
+      newWidth = Math.max(minSize, startVal.width * scale)
+      newHeight = Math.max(minSize, startVal.height * scale)
+    }
     next[index] = { ...ann, width: newWidth, height: newHeight }
   } else if (ann.type === 'image' && startVal.x != null && startVal.y != null && startVal.width != null && startVal.height != null && startVal.corner) {
     const minSize = 8
@@ -1336,6 +1342,33 @@ function resizeAnnotation(index: number, canvasX: number, canvasY: number) {
       x = Math.min(canvasX, right - minSize)
       width = right - x
       height = Math.max(minSize, canvasY - y)
+    }
+    if (preserveAspect && startVal.width > 0 && startVal.height > 0) {
+      const scale = Math.max(width / startVal.width, height / startVal.height)
+      const newW = Math.max(minSize, startVal.width * scale)
+      const newH = Math.max(minSize, startVal.height * scale)
+      // Re-anchor so the opposite edge stays fixed for each corner.
+      if (startVal.corner === 'se') {
+        width = newW
+        height = newH
+      } else if (startVal.corner === 'nw') {
+        const right = startVal.x + startVal.width
+        const bottom = startVal.y + startVal.height
+        x = right - newW
+        y = bottom - newH
+        width = newW
+        height = newH
+      } else if (startVal.corner === 'ne') {
+        const bottom = startVal.y + startVal.height
+        y = bottom - newH
+        width = newW
+        height = newH
+      } else if (startVal.corner === 'sw') {
+        const right = startVal.x + startVal.width
+        x = right - newW
+        width = newW
+        height = newH
+      }
     }
     next[index] = { ...ann, x, y, width, height }
   } else if (ann.type === 'emoji' && startVal.size != null) {
