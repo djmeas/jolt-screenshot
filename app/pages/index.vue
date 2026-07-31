@@ -144,6 +144,12 @@ function undo() {
   redrawCanvas()
 }
 
+function toggleStripLabels() {
+  labelsEnabled.value = !labelsEnabled.value
+  redrawCanvas()
+  scheduleAutoSave()
+}
+
 const canUndo = computed(() => annotationHistory.value.length > 0)
 const hasClearableContent = computed(() => hasImage.value)
 
@@ -2335,6 +2341,20 @@ onUnmounted(() => {
         <!-- Undo / Clear / Copy (desktop) -->
         <div class="hidden xl:flex items-center gap-1 shrink-0">
           <button
+            v-if="stripSegments.length > 1"
+            type="button"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            :class="[labelsEnabled
+              ? (isDark ? 'bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30' : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200')
+              : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100')]"
+            :disabled="!hasImage"
+            title="Toggle numbered labels"
+            @click="toggleStripLabels"
+          >
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" /><text x="12" y="15.5" text-anchor="middle" font-size="10" font-weight="bold" fill="currentColor">1</text></svg>
+            Labels
+          </button>
+          <button
             type="button"
             class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-30 disabled:cursor-not-allowed transition-all"
             :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100']"
@@ -2613,6 +2633,19 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <button
+            v-if="stripSegments.length > 1"
+            type="button"
+            class="flex w-full items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            :class="[labelsEnabled
+              ? (isDark ? 'bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30' : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200')
+              : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100')]"
+            :disabled="!hasImage"
+            @click="toggleStripLabels(); closeToolbarMenu()"
+          >
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" /><text x="12" y="15.5" text-anchor="middle" font-size="10" font-weight="bold" fill="currentColor">1</text></svg>
+            {{ labelsEnabled ? 'Hide labels' : 'Show labels' }}
+          </button>
           <div class="flex gap-2 pt-1 border-t" :class="[isDark ? 'border-zinc-800' : 'border-slate-200']">
             <button
               type="button"
