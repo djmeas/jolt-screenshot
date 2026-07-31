@@ -723,6 +723,55 @@ async function addImageAsLayer(file: File) {
   }
 }
 
+async function appendImageToRight(file: File) {
+  const canvas = getCanvas()
+  const base = baseImage.value
+  if (!canvas || !base || !hasImage.value) return
+  const objectUrl = URL.createObjectURL(file)
+  try {
+    const img = await loadImageElement(objectUrl)
+    const oldWidth = canvas.width
+    const oldHeight = canvas.height
+    const newWidth = oldWidth + STRIP_GAP + img.naturalWidth
+    const newHeight = Math.max(oldHeight, img.naturalHeight)
+
+    const composite = document.createElement('canvas')
+    composite.width = newWidth
+    composite.height = newHeight
+    const cctx = composite.getContext('2d')
+    if (!cctx) throw new Error('no-2d-context')
+    cctx.fillStyle = '#ffffff'
+    cctx.fillRect(0, 0, newWidth, newHeight)
+    cctx.drawImage(base.image, 0, 0, oldWidth, oldHeight)
+    cctx.drawImage(img, oldWidth + STRIP_GAP, 0)
+    URL.revokeObjectURL(objectUrl)
+
+    const compositeImg = await loadImageElement(composite.toDataURL('image/png'))
+    if (base.objectUrl) {
+      URL.revokeObjectURL(base.objectUrl)
+      trackedObjectUrls.delete(base.objectUrl)
+    }
+    canvas.width = newWidth
+    canvas.height = newHeight
+    baseImage.value = { objectUrl: null, image: compositeImg }
+    if (stripSegments.value.length === 0) {
+      stripSegments.value = [{ x: 0, width: oldWidth }]
+    }
+    stripSegments.value = [...stripSegments.value, { x: oldWidth + STRIP_GAP, width: img.naturalWidth }]
+    labelsEnabled.value = sessionLabelDefault.value
+    resetZoom()
+    redrawCanvas()
+    nextTick(() => {
+      updateCanvasDisplaySize()
+      playImageSlamEffect('full')
+    })
+    scheduleAutoSave()
+  } catch (err) {
+    URL.revokeObjectURL(objectUrl)
+    console.error('Failed to append image:', err)
+  }
+}
+
 function queueImageImport(file: File) {
   if (hasImage.value) {
     pendingPasteFile.value = file
