@@ -144,7 +144,6 @@ function onLabelEditorTab(e: KeyboardEvent) {
   editingLabelIndex.value = next
   editingLabelDraft.value = displayedLabelText(stripSegments.value[next]!, next)
   redrawCanvas()
-  nextTick(() => labelEditorInputRef.value?.focus())
 }
 
 function resetStripState() {
@@ -613,7 +612,7 @@ function getLabelMetrics(
   const inset = radius * 0.75 + 6
   const cy = inset + radius
   const cx = seg.x + inset + radius
-  const text = displayedLabelText(seg, i)
+  let text = displayedLabelText(seg, i)
   let fontSize = Math.round(radius)
   ctx.font = `bold ${fontSize}px sans-serif`
   let textWidth = ctx.measureText(text).width
@@ -643,8 +642,9 @@ function getLabelMetrics(
     if (pillWidth > maxPillWidth) {
       const maxChars = Math.max(3, Math.floor((maxPillWidth / fontSize) * 1.5))
       const truncated = text.length > maxChars ? text.slice(0, Math.max(1, maxChars - 1)) + '…' : text
+      text = truncated
       ctx.font = `bold ${fontSize}px sans-serif`
-      textWidth = ctx.measureText(truncated).width
+      textWidth = ctx.measureText(text).width
       pillWidth = Math.min(textWidth + 2 * pillPadding, maxPillWidth)
     }
   }
