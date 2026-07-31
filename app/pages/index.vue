@@ -507,6 +507,32 @@ function drawAnnotations(ctx: CanvasRenderingContext2D) {
   }
 }
 
+function drawStripLabels(ctx: CanvasRenderingContext2D) {
+  const canvas = getCanvas()
+  if (!canvas || stripSegments.value.length < 2 || !labelsEnabled.value) return
+  const radius = Math.min(28, Math.max(14, canvas.height * 0.03))
+  const inset = radius * 0.75 + 6
+  ctx.save()
+  for (let i = 0; i < stripSegments.value.length; i++) {
+    const seg = stripSegments.value[i]!
+    const cx = seg.x + inset + radius
+    const cy = inset + radius
+    ctx.beginPath()
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+    ctx.fillStyle = '#ffffff'
+    ctx.fill()
+    ctx.lineWidth = 2
+    ctx.strokeStyle = '#18181b'
+    ctx.stroke()
+    ctx.fillStyle = '#18181b'
+    ctx.font = `bold ${Math.round(radius)}px sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(String(i + 1), cx, cy)
+  }
+  ctx.restore()
+}
+
 function redrawCanvas() {
   const canvas = getCanvas()
   const ctx = getCanvasContext()
@@ -516,6 +542,7 @@ function redrawCanvas() {
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   ctx.drawImage(base.image, 0, 0, canvas.width, canvas.height)
   drawAnnotations(ctx)
+  drawStripLabels(ctx)
 
   // Resize handles (move mode, hovered or actively resized annotation)
   const handleIndex = resizeDragging.value ? resizeTargetIndex.value : hoveredAnnotationIndex.value
