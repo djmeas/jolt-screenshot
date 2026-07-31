@@ -113,6 +113,11 @@ function displayedLabelText(seg: { labelText: string }, i: number): string {
   return seg.labelText || String(i + 1)
 }
 
+// Temporary stub — real implementation lands in Task 4.
+function commitLabelEdit() {
+  // Implemented in Task 4.
+}
+
 function resetStripState() {
   editingLabelIndex.value = null
   editingLabelDraft.value = ''
@@ -619,6 +624,22 @@ function getLabelMetrics(
   }
 }
 
+function hitTestLabel(canvasX: number, canvasY: number, ctx: CanvasRenderingContext2D): number | null {
+  if (!labelsEnabled.value) return null
+  if (editingLabelIndex.value !== null) return null
+  const canvas = getCanvas()
+  if (!canvas) return null
+  const radius = Math.min(28, Math.max(14, canvas.height * 0.03))
+  for (let i = stripSegments.value.length - 1; i >= 0; i--) {
+    const m = getLabelMetrics(stripSegments.value[i]!, i, radius, ctx)
+    if (
+      canvasX >= m.rect.x && canvasX <= m.rect.x + m.rect.w &&
+      canvasY >= m.rect.y && canvasY <= m.rect.y + m.rect.h
+    ) return i
+  }
+  return null
+}
+
 function drawStripLabels(ctx: CanvasRenderingContext2D) {
   const canvas = getCanvas()
   if (!canvas || stripSegments.value.length < 2 || !labelsEnabled.value) return
@@ -1008,6 +1029,20 @@ function startDrawing(e: MouseEvent | TouchEvent) {
   }
 
   const { x, y } = getCanvasCoords(e)
+  const ctx = getCanvasContext()
+  if (ctx) {
+    const labelIdx = hitTestLabel(x, y, ctx)
+    if (labelIdx !== null) {
+      if (editingLabelIndex.value !== null && editingLabelIndex.value !== labelIdx) {
+        commitLabelEdit()
+      }
+      editingLabelIndex.value = labelIdx
+      editingLabelDraft.value = displayedLabelText(stripSegments.value[labelIdx]!, labelIdx)
+      redrawCanvas()
+      e.stopPropagation()
+      return
+    }
+  }
 
   if (toolMode.value === 'move') {
     const idx = getHoveredAnnotationForMoveMode(x, y)
