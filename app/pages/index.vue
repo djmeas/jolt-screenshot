@@ -98,6 +98,11 @@ const imageElementCache = new Map<string, HTMLImageElement>()
 const trackedObjectUrls = new Set<string>()
 const showPasteDialog = ref(false)
 const pendingPasteFile = ref<File | null>(null)
+const showHelp = ref(false)
+const helpButtonRef = ref<HTMLButtonElement | null>(null)
+const helpCardRef = ref<HTMLDivElement | null>(null)
+let previouslyFocusedElement: HTMLElement | null = null
+let helpKeydownCleanup: (() => void) | null = null
 
 // Append-to-right strip state
 const STRIP_GAP = 8
@@ -2464,6 +2469,32 @@ onUnmounted(() => {
   canvasResizeObserver?.disconnect()
   clearImageResources()
 })
+
+watch(showHelp, async (isOpen) => {
+  if (isOpen) {
+    previouslyFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    document.body.style.overflow = 'hidden'
+    const onKeydown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') showHelp.value = false
+    }
+    window.addEventListener('keydown', onKeydown)
+    helpKeydownCleanup = () => window.removeEventListener('keydown', onKeydown)
+    await nextTick()
+    helpCardRef.value?.focus()
+  } else {
+    document.body.style.overflow = ''
+    if (helpKeydownCleanup) {
+      helpKeydownCleanup()
+      helpKeydownCleanup = null
+    }
+    if (previouslyFocusedElement && previouslyFocusedElement.isConnected) {
+      previouslyFocusedElement.focus()
+    } else if (helpButtonRef.value) {
+      helpButtonRef.value.focus()
+    }
+    previouslyFocusedElement = null
+  }
+})
 </script>
 
 <template>
@@ -2681,6 +2712,15 @@ onUnmounted(() => {
             <svg v-else class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
             {{ copied ? 'Copied!' : 'Copy to Clipboard' }}
           </button>
+          <button
+            ref="helpButtonRef"
+            type="button"
+            class="flex items-center justify-center w-8 h-8 rounded-lg text-base font-semibold transition-colors"
+            :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100']"
+            title="Help"
+            aria-label="Open help"
+            @click="showHelp = true"
+          >?</button>
         </div>
 
         </div>
@@ -3321,6 +3361,44 @@ onUnmounted(() => {
             >
               Cancel
             </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="showHelp"
+        class="fixed inset-0 z-50 flex items-center justify-center p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="help-title"
+      >
+        <div class="absolute inset-0 bg-black/50" @click="showHelp = false" />
+        <div
+          ref="helpCardRef"
+          tabindex="-1"
+          class="relative w-full max-w-2xl rounded-xl border shadow-2xl outline-none"
+          :class="[isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-slate-200']"
+        >
+          <div class="flex items-center justify-between p-5 pb-3">
+            <h2
+              id="help-title"
+              class="text-lg font-semibold"
+              :class="[isDark ? 'text-zinc-100' : 'text-slate-900']"
+            >
+              How to use JoltShot
+            </h2>
+            <button
+              type="button"
+              class="w-8 h-8 rounded-md flex items-center justify-center text-lg"
+              :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100']"
+              aria-label="Close help"
+              @click="showHelp = false"
+            >×</button>
+          </div>
+          <div class="px-5 pb-5 max-h-[80vh] overflow-y-auto">
+            <HelpContent :is-dark="isDark" />
           </div>
         </div>
       </div>
