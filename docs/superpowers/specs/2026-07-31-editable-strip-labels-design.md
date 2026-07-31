@@ -12,7 +12,7 @@ The append-to-right feature already draws numbered labels (1, 2, 3…) at the to
 
 - Each segment's label becomes clickable on the canvas. A click opens an inline text input over the label, pre-filled with its current text (the auto-number, or the user's custom text if previously set).
 - Custom text is rendered as-is: free-form, single-line, plain text.
-- When the rendered text is too wide for the existing circle, the label auto-expands into a pill (rounded rectangle) that grows horizontally to fit, capped at `min(seg.width - inset * 2, 4 * radius)`. If still too long, the font shrinks to a min of 8px, then ellipsizes (`Long tex…`).
+- When the rendered text is too wide for the existing circle, the label auto-expands into a pill (rounded rectangle) that grows horizontally to fit the text (plus padding), capped only at `seg.width - inset * 2` so the pill never overflows its segment. If even at the minimum font size the text would still overflow the segment, the text is truncated with an ellipsis (`Long tex…`).
 - Empty input on commit reverts the label to the auto-number.
 - Custom label text persists with the project and survives reload / Saves-panel restore.
 - Toggling the existing strip-wide **Labels** button hides labels (and any open editor) like today.
@@ -91,7 +91,7 @@ function getLabelMetrics(seg, i, ctx, radius): {
 
 1. Set `fontSize = round(radius)`, `ctx.font = "bold " + fontSize + "px sans-serif"`, measure `textWidth = ctx.measureText(displayedText).width`.
 2. If `textWidth <= 2 * radius - 4` → **circle**: `isPill = false`, `rect = { x: cx - radius, y: cy - radius, w: 2 * radius, h: 2 * radius }`.
-3. Else compute `pillMaxWidth = min(seg.width - inset * 2, 4 * radius)`, `pillPadding = radius * 0.5`. Try `pillWidth = textWidth + 2 * pillPadding`. If `pillWidth > pillMaxWidth`, shrink: drop `fontSize` by 1px (min 8), re-measure, retry. If `fontSize` hits the floor and `pillWidth > pillMaxWidth`, ellipsize: `text = truncateWithEllipsis(original, maxChars)`, re-measure once, accept whatever width that produces (it will be ≤ pillMaxWidth in practice).
+3. Else compute `pillMaxWidth = seg.width - inset * 2`, `pillPadding = radius * 0.5`. Try `pillWidth = textWidth + 2 * pillPadding`. If `pillWidth > pillMaxWidth`, shrink: drop `fontSize` by 1px (min 8), re-measure, retry. If `fontSize` hits the floor and `pillWidth > pillMaxWidth`, ellipsize: `text = truncateWithEllipsis(original, maxChars)`, re-measure once, accept whatever width that produces (it will be ≤ pillMaxWidth in practice).
 4. Pill rect: `isPill = true`, `rect = { x: cx - pillWidth / 2, y: cy - radius, w: pillWidth, h: 2 * radius }`.
 
 **`drawStripLabels` is rewritten** to loop segments and delegate to `getLabelMetrics` for shape decisions:
@@ -104,7 +104,6 @@ Constants:
 
 - `LABEL_MIN_FONT = 8`
 - `LABEL_PILL_PADDING_RATIO = 0.5` (pill text-to-rect padding, multiplied by radius)
-- `LABEL_PILL_MAX_WIDTH_RATIO = 4` (pill width cap as a multiple of radius)
 - Ellipsize: trim to `Math.max(3, floor((pillMaxWidth / fontSize) * 1.5))` chars, append `…`.
 
 ## Hit-testing + inline editor

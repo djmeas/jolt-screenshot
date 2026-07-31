@@ -151,7 +151,6 @@ In `app/pages/index.vue`, immediately after `const STRIP_GAP = 8` (line 101), in
 ```ts
 const LABEL_MIN_FONT = 8
 const LABEL_PILL_PADDING_RATIO = 0.5
-const LABEL_PILL_MAX_WIDTH_RATIO = 4
 const LABEL_FOCUS_RING_COLOR = '#6366f1'
 ```
 
@@ -195,8 +194,9 @@ function getLabelMetrics(
   }
 
   // Pill path: shrink font down to LABEL_MIN_FONT, then ellipsize once.
+  // Pill is sized to fit the text, capped only by the segment width so it never overflows the image.
   const pillPadding = radius * LABEL_PILL_PADDING_RATIO
-  const maxPillWidth = Math.min(seg.width - inset * 2, radius * LABEL_PILL_MAX_WIDTH_RATIO)
+  const maxPillWidth = seg.width - inset * 2
   let pillWidth = textWidth + 2 * pillPadding
 
   if (pillWidth > maxPillWidth) {
