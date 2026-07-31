@@ -72,6 +72,7 @@ A new `?` button is added **after** the existing "Copy to Clipboard" button insi
 - Tooltip: `title="Help"`.
 - Accessibility: `aria-label="Open help"`.
 - Click handler: `showHelp = true`.
+- Element ref: `ref="helpButtonRef"`. Used by the modal to restore focus on close (see "Open / close behavior" below).
 - Visible only at `xl` breakpoint and up (the wrapper already gates this).
 - Disabled only when `!hasImage`? No — the help is useful even before loading an image. Always enabled.
 
