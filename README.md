@@ -11,7 +11,7 @@ A fast, in-browser screenshot annotation tool. Paste or upload an image, annotat
 ### Image loading
 - **Paste** – Use `Cmd+V` / `Ctrl+V` to paste an image from your clipboard
 - **Upload** – Drop a file or use the upload button to load an image
-- **Append to right** – Chain multiple screenshots into one wide strip, with optional numbered sequence labels (1, 2, 3…)
+- **Append to right** – Chain multiple screenshots into one wide strip, with optional sequence labels. Click a label on the canvas to replace the auto-number with custom text (e.g. "Step 1", "A"); the label auto-expands to a pill for longer text, and clearing the field reverts to the auto-number.
 - Supports common image formats (PNG, JPEG, WebP, etc.)
 
 ### Annotation tools
