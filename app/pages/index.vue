@@ -102,7 +102,6 @@ const pendingPasteFile = ref<File | null>(null)
 const STRIP_GAP = 8
 const LABEL_MIN_FONT = 8
 const LABEL_PILL_PADDING_RATIO = 0.5
-const LABEL_PILL_MAX_WIDTH_RATIO = 4
 const LABEL_FOCUS_RING_COLOR = '#6366f1'
 const stripSegments = ref<{ x: number, width: number, labelText: string }[]>([])
 const labelsEnabled = ref(true)
@@ -628,8 +627,9 @@ function getLabelMetrics(
   }
 
   // Pill path: shrink font down to LABEL_MIN_FONT, then ellipsize once.
+  // Pill is sized to fit the text, capped only by the segment width so it never overflows the image.
   const pillPadding = radius * LABEL_PILL_PADDING_RATIO
-  const maxPillWidth = Math.min(seg.width - inset * 2, radius * LABEL_PILL_MAX_WIDTH_RATIO)
+  const maxPillWidth = seg.width - inset * 2
   let pillWidth = textWidth + 2 * pillPadding
 
   if (pillWidth > maxPillWidth) {
