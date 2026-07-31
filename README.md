@@ -36,6 +36,7 @@ A fast, in-browser screenshot annotation tool. Paste or upload an image, annotat
 
 ### UI
 - **Dark / light mode** – Theme toggle with preference saved in `localStorage`
+- **Help** – Click `?` in the bottom-right of the toolbar for a quick user guide covering all the common workflows
 - **Keyboard shortcuts** – Undo and paste
 
 ## Setup
