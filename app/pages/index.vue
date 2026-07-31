@@ -99,11 +99,15 @@ const pendingPasteFile = ref<File | null>(null)
 
 // Append-to-right strip state
 const STRIP_GAP = 8
-const stripSegments = ref<{ x: number, width: number }[]>([])
+const stripSegments = ref<{ x: number, width: number, labelText: string }[]>([])
 const labelsEnabled = ref(true)
 const sessionLabelDefault = ref(true)
+const editingLabelIndex = ref<number | null>(null)
+const editingLabelDraft = ref('')
 
 function resetStripState() {
+  editingLabelIndex.value = null
+  editingLabelDraft.value = ''
   stripSegments.value = []
   labelsEnabled.value = sessionLabelDefault.value
 }
@@ -829,9 +833,9 @@ async function appendImageToRight(file: File) {
     canvas.height = newHeight
     baseImage.value = { objectUrl: null, image: compositeImg }
     if (stripSegments.value.length === 0) {
-      stripSegments.value = [{ x: 0, width: oldWidth }]
+      stripSegments.value = [{ x: 0, width: oldWidth, labelText: '' }]
     }
-    stripSegments.value = [...stripSegments.value, { x: oldWidth + STRIP_GAP, width: img.naturalWidth }]
+    stripSegments.value = [...stripSegments.value, { x: oldWidth + STRIP_GAP, width: img.naturalWidth, labelText: '' }]
     labelsEnabled.value = sessionLabelDefault.value
     resetZoom()
     redrawCanvas()
@@ -1560,7 +1564,7 @@ async function performSave(opts: { silent?: boolean } = {}): Promise<boolean> {
       layers,
       annotations: JSON.parse(JSON.stringify(annotations.value)),
       strip: stripSegments.value.length > 1
-        ? { segments: stripSegments.value.map(s => ({ ...s })), labelsEnabled: labelsEnabled.value }
+        ? { segments: stripSegments.value.map(s => ({ x: s.x, width: s.width, labelText: s.labelText })), labelsEnabled: labelsEnabled.value }
         : undefined,
       settings: buildSavedSettings(),
       thumbDataUrl: makeThumbnailFromCanvas(canvas),
@@ -1657,7 +1661,7 @@ async function loadSavedProjectIntoCanvas(id: string) {
     emojiSize.value = saved.settings.emojiSize
 
     if (saved.strip && saved.strip.segments.length > 1) {
-      stripSegments.value = saved.strip.segments.map(s => ({ ...s }))
+      stripSegments.value = saved.strip.segments.map(s => ({ x: s.x, width: s.width, labelText: s.labelText ?? '' }))
       labelsEnabled.value = saved.strip.labelsEnabled
     }
 
