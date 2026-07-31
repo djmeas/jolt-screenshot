@@ -29,6 +29,16 @@ export type SavedBaseImage = {
   naturalHeight: number
 }
 
+export type SavedStripSegment = {
+  x: number
+  width: number
+}
+
+export type SavedStrip = {
+  segments: SavedStripSegment[]
+  labelsEnabled: boolean
+}
+
 export type SavedSettings = {
   strokeColor: string
   strokeWidth: number
@@ -46,6 +56,7 @@ export type SavedProject = {
   baseImage: SavedBaseImage | null
   layers: SavedLayer[]
   annotations: unknown[]
+  strip?: SavedStrip
   settings: SavedSettings
 }
 
@@ -160,6 +171,7 @@ export type BuildSaveInput = {
   baseImage: SavedBaseImage | null
   layers: SavedLayer[]
   annotations: unknown[]
+  strip?: SavedStrip
   settings: SavedSettings
   thumbDataUrl?: string | null
 }
@@ -179,6 +191,7 @@ export function saveProject(input: BuildSaveInput): SaveResult {
     baseImage: input.baseImage,
     layers: input.layers,
     annotations: input.annotations,
+    strip: input.strip,
     settings: input.settings,
   }
 

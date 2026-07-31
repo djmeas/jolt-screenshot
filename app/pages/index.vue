@@ -97,6 +97,17 @@ const trackedObjectUrls = new Set<string>()
 const showPasteDialog = ref(false)
 const pendingPasteFile = ref<File | null>(null)
 
+// Append-to-right strip state
+const STRIP_GAP = 8
+const stripSegments = ref<{ x: number, width: number }[]>([])
+const labelsEnabled = ref(true)
+const sessionLabelDefault = ref(true)
+
+function resetStripState() {
+  stripSegments.value = []
+  labelsEnabled.value = sessionLabelDefault.value
+}
+
 type PenStroke = { type: 'pen', path: { x: number, y: number }[], color: string, lineWidth: number }
 type ArrowAnnotation = { type: 'arrow', x1: number, y1: number, length: number, angle: number, color: string, lineWidth: number }
 type BoxAnnotation = { type: 'box', x: number, y: number, width: number, height: number, color: string, lineWidth: number }
@@ -131,6 +142,12 @@ function undo() {
     selectedArrowIndex.value = null
   }
   redrawCanvas()
+}
+
+function toggleStripLabels() {
+  labelsEnabled.value = !labelsEnabled.value
+  redrawCanvas()
+  scheduleAutoSave()
 }
 
 const canUndo = computed(() => annotationHistory.value.length > 0)
@@ -537,6 +554,32 @@ function drawAnnotations(ctx: CanvasRenderingContext2D) {
   }
 }
 
+function drawStripLabels(ctx: CanvasRenderingContext2D) {
+  const canvas = getCanvas()
+  if (!canvas || stripSegments.value.length < 2 || !labelsEnabled.value) return
+  const radius = Math.min(28, Math.max(14, canvas.height * 0.03))
+  const inset = radius * 0.75 + 6
+  ctx.save()
+  for (let i = 0; i < stripSegments.value.length; i++) {
+    const seg = stripSegments.value[i]!
+    const cx = seg.x + inset + radius
+    const cy = inset + radius
+    ctx.beginPath()
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+    ctx.fillStyle = '#ffffff'
+    ctx.fill()
+    ctx.lineWidth = 2
+    ctx.strokeStyle = '#18181b'
+    ctx.stroke()
+    ctx.fillStyle = '#18181b'
+    ctx.font = `bold ${Math.round(radius)}px sans-serif`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillText(String(i + 1), cx, cy)
+  }
+  ctx.restore()
+}
+
 function redrawCanvas() {
   const canvas = getCanvas()
   const ctx = getCanvasContext()
@@ -546,6 +589,7 @@ function redrawCanvas() {
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   ctx.drawImage(base.image, 0, 0, canvas.width, canvas.height)
   drawAnnotations(ctx)
+  drawStripLabels(ctx)
 
   // Resize handles (move mode, hovered or actively resized annotation)
   const handleIndex = resizeDragging.value ? resizeTargetIndex.value : hoveredAnnotationIndex.value
@@ -696,6 +740,7 @@ function resetDrawingState() {
 
 async function replaceWithImage(fileOrUrl: File | string) {
   clearImageResources()
+  resetStripState()
   const objectUrl = typeof fileOrUrl !== 'string' ? URL.createObjectURL(fileOrUrl) : null
   const url = objectUrl ?? fileOrUrl
   try {
@@ -752,6 +797,55 @@ async function addImageAsLayer(file: File) {
   }
 }
 
+async function appendImageToRight(file: File) {
+  const canvas = getCanvas()
+  const base = baseImage.value
+  if (!canvas || !base || !hasImage.value) return
+  const objectUrl = URL.createObjectURL(file)
+  try {
+    const img = await loadImageElement(objectUrl)
+    const oldWidth = canvas.width
+    const oldHeight = canvas.height
+    const newWidth = oldWidth + STRIP_GAP + img.naturalWidth
+    const newHeight = Math.max(oldHeight, img.naturalHeight)
+
+    const composite = document.createElement('canvas')
+    composite.width = newWidth
+    composite.height = newHeight
+    const cctx = composite.getContext('2d')
+    if (!cctx) throw new Error('no-2d-context')
+    cctx.fillStyle = '#ffffff'
+    cctx.fillRect(0, 0, newWidth, newHeight)
+    cctx.drawImage(base.image, 0, 0, oldWidth, oldHeight)
+    cctx.drawImage(img, oldWidth + STRIP_GAP, 0)
+    URL.revokeObjectURL(objectUrl)
+
+    const compositeImg = await loadImageElement(composite.toDataURL('image/png'))
+    if (base.objectUrl) {
+      URL.revokeObjectURL(base.objectUrl)
+      trackedObjectUrls.delete(base.objectUrl)
+    }
+    canvas.width = newWidth
+    canvas.height = newHeight
+    baseImage.value = { objectUrl: null, image: compositeImg }
+    if (stripSegments.value.length === 0) {
+      stripSegments.value = [{ x: 0, width: oldWidth }]
+    }
+    stripSegments.value = [...stripSegments.value, { x: oldWidth + STRIP_GAP, width: img.naturalWidth }]
+    labelsEnabled.value = sessionLabelDefault.value
+    resetZoom()
+    redrawCanvas()
+    nextTick(() => {
+      updateCanvasDisplaySize()
+      playImageSlamEffect('full')
+    })
+    scheduleAutoSave()
+  } catch (err) {
+    URL.revokeObjectURL(objectUrl)
+    console.error('Failed to append image:', err)
+  }
+}
+
 function queueImageImport(file: File) {
   if (hasImage.value) {
     pendingPasteFile.value = file
@@ -780,11 +874,19 @@ async function confirmAddImageLayer() {
   await addImageAsLayer(file)
 }
 
+async function confirmAppendImage() {
+  const file = pendingPasteFile.value
+  if (!file) return
+  cancelPasteDialog()
+  await appendImageToRight(file)
+}
+
 function clearAnnotations({ keepSaved = false, resetProject = true }: { keepSaved?: boolean, resetProject?: boolean } = {}) {
   cancelPasteDialog()
   closeToolbarMenu()
   clearImageResources()
   resetDrawingState()
+  resetStripState()
   hasImage.value = false
   const canvas = getCanvas()
   if (canvas) {
@@ -933,7 +1035,7 @@ function draw(e: MouseEvent | TouchEvent) {
     moveStartPos.value = { x, y }
     redrawCanvas()
   } else if (toolMode.value === 'move' && resizeDragging.value && resizeTargetIndex.value !== null) {
-    resizeAnnotation(resizeTargetIndex.value, x, y)
+    resizeAnnotation(resizeTargetIndex.value, x, y, e.shiftKey)
     redrawCanvas()
   } else if (toolMode.value === 'move' && !moveDragging.value && !resizeDragging.value) {
     const newHover = getHoveredAnnotationForMoveMode(x, y)
@@ -1236,7 +1338,7 @@ function translateAnnotation(index: number, dx: number, dy: number) {
   annotations.value = next
 }
 
-function resizeAnnotation(index: number, canvasX: number, canvasY: number) {
+function resizeAnnotation(index: number, canvasX: number, canvasY: number, preserveAspect = false) {
   const ann = annotations.value[index]
   const start = resizeStartPos.value
   const startVal = resizeStartValue.value
@@ -1249,8 +1351,14 @@ function resizeAnnotation(index: number, canvasX: number, canvasY: number) {
     const angle = Math.atan2(dy, dx)
     next[index] = { ...ann, length, angle }
   } else if (ann.type === 'box' && startVal.width != null && startVal.height != null) {
-    const newWidth = Math.max(8, canvasX - ann.x)
-    const newHeight = Math.max(8, canvasY - ann.y)
+    const minSize = 8
+    let newWidth = Math.max(minSize, canvasX - ann.x)
+    let newHeight = Math.max(minSize, canvasY - ann.y)
+    if (preserveAspect && startVal.width > 0 && startVal.height > 0) {
+      const scale = Math.max(newWidth / startVal.width, newHeight / startVal.height)
+      newWidth = Math.max(minSize, startVal.width * scale)
+      newHeight = Math.max(minSize, startVal.height * scale)
+    }
     next[index] = { ...ann, width: newWidth, height: newHeight }
   } else if (ann.type === 'image' && startVal.x != null && startVal.y != null && startVal.width != null && startVal.height != null && startVal.corner) {
     const minSize = 8
@@ -1275,6 +1383,33 @@ function resizeAnnotation(index: number, canvasX: number, canvasY: number) {
       x = Math.min(canvasX, right - minSize)
       width = right - x
       height = Math.max(minSize, canvasY - y)
+    }
+    if (preserveAspect && startVal.width > 0 && startVal.height > 0) {
+      const scale = Math.max(width / startVal.width, height / startVal.height)
+      const newW = Math.max(minSize, startVal.width * scale)
+      const newH = Math.max(minSize, startVal.height * scale)
+      // Re-anchor so the opposite edge stays fixed for each corner.
+      if (startVal.corner === 'se') {
+        width = newW
+        height = newH
+      } else if (startVal.corner === 'nw') {
+        const right = startVal.x + startVal.width
+        const bottom = startVal.y + startVal.height
+        x = right - newW
+        y = bottom - newH
+        width = newW
+        height = newH
+      } else if (startVal.corner === 'ne') {
+        const bottom = startVal.y + startVal.height
+        y = bottom - newH
+        width = newW
+        height = newH
+      } else if (startVal.corner === 'sw') {
+        const right = startVal.x + startVal.width
+        x = right - newW
+        width = newW
+        height = newH
+      }
     }
     next[index] = { ...ann, x, y, width, height }
   } else if (ann.type === 'emoji' && startVal.size != null) {
@@ -1424,6 +1559,9 @@ async function performSave(opts: { silent?: boolean } = {}): Promise<boolean> {
       baseImage: baseImageData,
       layers,
       annotations: JSON.parse(JSON.stringify(annotations.value)),
+      strip: stripSegments.value.length > 1
+        ? { segments: stripSegments.value.map(s => ({ ...s })), labelsEnabled: labelsEnabled.value }
+        : undefined,
       settings: buildSavedSettings(),
       thumbDataUrl: makeThumbnailFromCanvas(canvas),
     })
@@ -1478,6 +1616,7 @@ async function loadSavedProjectIntoCanvas(id: string) {
     resetDrawingState()
     hasImage.value = false
   }
+  resetStripState()
   const canvas = getCanvas()
   const ctx = getCanvasContext()
   if (!canvas || !ctx) return
@@ -1516,6 +1655,11 @@ async function loadSavedProjectIntoCanvas(id: string) {
     strokeWidth.value = saved.settings.strokeWidth
     textFontSize.value = saved.settings.textFontSize
     emojiSize.value = saved.settings.emojiSize
+
+    if (saved.strip && saved.strip.segments.length > 1) {
+      stripSegments.value = saved.strip.segments.map(s => ({ ...s }))
+      labelsEnabled.value = saved.strip.labelsEnabled
+    }
 
     projectId.value = saved.id
     projectName.value = saved.name
@@ -2288,6 +2432,20 @@ onUnmounted(() => {
         <!-- Undo / Clear / Copy (desktop) -->
         <div class="hidden xl:flex items-center gap-1 shrink-0">
           <button
+            v-if="stripSegments.length > 1"
+            type="button"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            :class="[labelsEnabled
+              ? (isDark ? 'bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30' : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200')
+              : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100')]"
+            :disabled="!hasImage"
+            title="Toggle numbered labels"
+            @click="toggleStripLabels"
+          >
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" /><text x="12" y="15.5" text-anchor="middle" font-size="10" font-weight="bold" fill="currentColor">1</text></svg>
+            Labels
+          </button>
+          <button
             type="button"
             class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-30 disabled:cursor-not-allowed transition-all"
             :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100']"
@@ -2616,6 +2774,19 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <button
+            v-if="stripSegments.length > 1"
+            type="button"
+            class="flex w-full items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            :class="[labelsEnabled
+              ? (isDark ? 'bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30' : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200')
+              : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100')]"
+            :disabled="!hasImage"
+            @click="toggleStripLabels(); closeToolbarMenu()"
+          >
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" /><text x="12" y="15.5" text-anchor="middle" font-size="10" font-weight="bold" fill="currentColor">1</text></svg>
+            {{ labelsEnabled ? 'Hide labels' : 'Show labels' }}
+          </button>
           <div class="flex gap-2 pt-1 border-t" :class="[isDark ? 'border-zinc-800' : 'border-slate-200']">
             <button
               type="button"
@@ -2882,7 +3053,7 @@ onUnmounted(() => {
       >
         <div class="absolute inset-0 bg-black/50" @click="cancelPasteDialog" />
         <div
-          class="relative w-full max-w-sm rounded-xl border p-5 shadow-2xl"
+          class="relative w-full max-w-lg rounded-xl border p-5 shadow-2xl"
           :class="[isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-slate-200']"
         >
           <h2
@@ -2893,12 +3064,16 @@ onUnmounted(() => {
             Add image
           </h2>
           <p class="mt-2 text-sm" :class="[isDark ? 'text-zinc-400' : 'text-slate-600']">
-            An image is already loaded. Replace it or add the new image as a layer on top?
+            An image is already loaded. Replace it, append it to the right as a sequence, or add it as a layer on top?
           </p>
-          <div class="mt-5 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+          <label class="mt-4 flex items-center gap-2 text-sm cursor-pointer select-none" :class="[isDark ? 'text-zinc-300' : 'text-slate-700']">
+            <input v-model="sessionLabelDefault" type="checkbox" class="w-4 h-4 rounded accent-indigo-600" />
+            Add numbered labels (1, 2, 3…)
+          </label>
+          <div class="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
             <button
               type="button"
-              class="flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              class="flex-1 whitespace-nowrap px-3 py-2 rounded-lg text-sm font-medium transition-colors"
               :class="[isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-800']"
               @click="confirmReplaceImage"
             >
@@ -2906,14 +3081,22 @@ onUnmounted(() => {
             </button>
             <button
               type="button"
-              class="flex-1 px-4 py-2 rounded-lg text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
+              class="flex-1 whitespace-nowrap px-3 py-2 rounded-lg text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
+              @click="confirmAppendImage"
+            >
+              Append to right
+            </button>
+            <button
+              type="button"
+              class="flex-1 whitespace-nowrap px-3 py-2 rounded-lg text-sm font-medium transition-colors"
+              :class="[isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-800']"
               @click="confirmAddImageLayer"
             >
               Add as layer
             </button>
             <button
               type="button"
-              class="flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              class="flex-1 whitespace-nowrap px-3 py-2 rounded-lg text-sm font-medium transition-colors"
               :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100']"
               @click="cancelPasteDialog"
             >
