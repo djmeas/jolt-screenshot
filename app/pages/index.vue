@@ -99,11 +99,19 @@ const pendingPasteFile = ref<File | null>(null)
 
 // Append-to-right strip state
 const STRIP_GAP = 8
+const LABEL_MIN_FONT = 8
+const LABEL_PILL_PADDING_RATIO = 0.5
+const LABEL_PILL_MAX_WIDTH_RATIO = 4
+const LABEL_FOCUS_RING_COLOR = '#6366f1'
 const stripSegments = ref<{ x: number, width: number, labelText: string }[]>([])
 const labelsEnabled = ref(true)
 const sessionLabelDefault = ref(true)
 const editingLabelIndex = ref<number | null>(null)
 const editingLabelDraft = ref('')
+
+function displayedLabelText(seg: { labelText: string }, i: number): string {
+  return seg.labelText || String(i + 1)
+}
 
 function resetStripState() {
   editingLabelIndex.value = null
@@ -558,28 +566,98 @@ function drawAnnotations(ctx: CanvasRenderingContext2D) {
   }
 }
 
+function getLabelMetrics(
+  seg: { x: number, width: number, labelText: string },
+  i: number,
+  radius: number,
+  ctx: CanvasRenderingContext2D,
+): { text: string, fontSize: number, isPill: boolean, rect: { x: number, y: number, w: number, h: number } } {
+  const inset = radius * 0.75 + 6
+  const cy = inset + radius
+  const cx = seg.x + inset + radius
+  const text = displayedLabelText(seg, i)
+  let fontSize = Math.round(radius)
+  ctx.font = `bold ${fontSize}px sans-serif`
+  let textWidth = ctx.measureText(text).width
+
+  // Fits in a circle: text width <= diameter minus 4px slack.
+  if (textWidth <= 2 * radius - 4) {
+    return {
+      text,
+      fontSize,
+      isPill: false,
+      rect: { x: cx - radius, y: cy - radius, w: 2 * radius, h: 2 * radius },
+    }
+  }
+
+  // Pill path: shrink font down to LABEL_MIN_FONT, then ellipsize once.
+  const pillPadding = radius * LABEL_PILL_PADDING_RATIO
+  const maxPillWidth = Math.min(seg.width - inset * 2, radius * LABEL_PILL_MAX_WIDTH_RATIO)
+  let pillWidth = textWidth + 2 * pillPadding
+
+  if (pillWidth > maxPillWidth) {
+    while (fontSize > LABEL_MIN_FONT && pillWidth > maxPillWidth) {
+      fontSize -= 1
+      ctx.font = `bold ${fontSize}px sans-serif`
+      textWidth = ctx.measureText(text).width
+      pillWidth = textWidth + 2 * pillPadding
+    }
+    if (pillWidth > maxPillWidth) {
+      const maxChars = Math.max(3, Math.floor((maxPillWidth / fontSize) * 1.5))
+      const truncated = text.length > maxChars ? text.slice(0, Math.max(1, maxChars - 1)) + '…' : text
+      ctx.font = `bold ${fontSize}px sans-serif`
+      textWidth = ctx.measureText(truncated).width
+      pillWidth = Math.min(textWidth + 2 * pillPadding, maxPillWidth)
+    }
+  }
+
+  return {
+    text,
+    fontSize,
+    isPill: true,
+    rect: { x: cx - pillWidth / 2, y: cy - radius, w: pillWidth, h: 2 * radius },
+  }
+}
+
 function drawStripLabels(ctx: CanvasRenderingContext2D) {
   const canvas = getCanvas()
   if (!canvas || stripSegments.value.length < 2 || !labelsEnabled.value) return
   const radius = Math.min(28, Math.max(14, canvas.height * 0.03))
-  const inset = radius * 0.75 + 6
   ctx.save()
   for (let i = 0; i < stripSegments.value.length; i++) {
     const seg = stripSegments.value[i]!
-    const cx = seg.x + inset + radius
-    const cy = inset + radius
+    const m = getLabelMetrics(seg, i, radius, ctx)
     ctx.beginPath()
-    ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+    if (m.isPill) {
+      ctx.roundRect(m.rect.x, m.rect.y, m.rect.w, m.rect.h, radius)
+    } else {
+      const cx = m.rect.x + radius
+      const cy = m.rect.y + radius
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+    }
     ctx.fillStyle = '#ffffff'
     ctx.fill()
     ctx.lineWidth = 2
     ctx.strokeStyle = '#18181b'
     ctx.stroke()
     ctx.fillStyle = '#18181b'
-    ctx.font = `bold ${Math.round(radius)}px sans-serif`
+    ctx.font = `bold ${m.fontSize}px sans-serif`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
-    ctx.fillText(String(i + 1), cx, cy)
+    const cx = m.rect.x + m.rect.w / 2
+    const cy = m.rect.y + m.rect.h / 2
+    ctx.fillText(m.text, cx, cy)
+    if (editingLabelIndex.value === i) {
+      ctx.beginPath()
+      if (m.isPill) {
+        ctx.roundRect(m.rect.x, m.rect.y, m.rect.w, m.rect.h, radius)
+      } else {
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+      }
+      ctx.strokeStyle = LABEL_FOCUS_RING_COLOR
+      ctx.lineWidth = 2
+      ctx.stroke()
+    }
   }
   ctx.restore()
 }
