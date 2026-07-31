@@ -800,6 +800,13 @@ async function confirmAddImageLayer() {
   await addImageAsLayer(file)
 }
 
+async function confirmAppendImage() {
+  const file = pendingPasteFile.value
+  if (!file) return
+  cancelPasteDialog()
+  await appendImageToRight(file)
+}
+
 function clearAnnotations({ keepSaved = false, resetProject = true }: { keepSaved?: boolean, resetProject?: boolean } = {}) {
   cancelPasteDialog()
   closeToolbarMenu()
@@ -2856,9 +2863,13 @@ onUnmounted(() => {
             Add image
           </h2>
           <p class="mt-2 text-sm" :class="[isDark ? 'text-zinc-400' : 'text-slate-600']">
-            An image is already loaded. Replace it or add the new image as a layer on top?
+            An image is already loaded. Replace it, append it to the right as a sequence, or add it as a layer on top?
           </p>
-          <div class="mt-5 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+          <label class="mt-4 flex items-center gap-2 text-sm cursor-pointer select-none" :class="[isDark ? 'text-zinc-300' : 'text-slate-700']">
+            <input v-model="sessionLabelDefault" type="checkbox" class="w-4 h-4 rounded accent-indigo-600" />
+            Add numbered labels (1, 2, 3…)
+          </label>
+          <div class="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
             <button
               type="button"
               class="flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
@@ -2870,6 +2881,14 @@ onUnmounted(() => {
             <button
               type="button"
               class="flex-1 px-4 py-2 rounded-lg text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
+              @click="confirmAppendImage"
+            >
+              Append to right
+            </button>
+            <button
+              type="button"
+              class="flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              :class="[isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-800']"
               @click="confirmAddImageLayer"
             >
               Add as layer
