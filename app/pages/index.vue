@@ -1698,6 +1698,12 @@ function registerColorButton(value: string, el: unknown, menu = false) {
   else map.delete(value)
 }
 
+function registerCustomSwatchButton(el: unknown, menu = false) {
+  registerColorButton(CUSTOM_COLOR_KEY, el, menu)
+  const target = menu ? customMenuSwatchRef : customSwatchRef
+  target.value = el instanceof HTMLButtonElement ? el : null
+}
+
 function registerStrokeButton(size: number, el: unknown, menu = false) {
   const map = menu ? strokeMenuButtonEls : strokeButtonEls
   if (el instanceof HTMLButtonElement) map.set(size, el)
@@ -2333,7 +2339,7 @@ onUnmounted(() => {
               :style="colorIndicatorStyle"
             />
             <button
-              :ref="(el) => { registerColorButton(CUSTOM_COLOR_KEY, el); customSwatchRef = (el instanceof HTMLButtonElement) ? el : null }"
+              :ref="(el) => registerCustomSwatchButton(el)"
               type="button"
               class="relative z-10 w-6 h-6 rounded-full transition-transform hover:scale-110 ring-1 disabled:opacity-30"
               :class="[
@@ -2517,7 +2523,7 @@ onUnmounted(() => {
                 :style="colorMenuIndicatorStyle"
               />
               <button
-                :ref="(el) => { registerColorButton(CUSTOM_COLOR_KEY, el, true); customMenuSwatchRef = (el instanceof HTMLButtonElement) ? el : null }"
+                :ref="(el) => registerCustomSwatchButton(el, true)"
                 type="button"
                 class="relative z-10 w-7 h-7 rounded-full transition-transform hover:scale-110 ring-1 disabled:opacity-30"
                 :class="[
