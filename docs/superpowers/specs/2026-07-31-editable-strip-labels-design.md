@@ -177,7 +177,7 @@ A single `<input>` element is rendered in the template, **always present in the 
 />
 ```
 
-`labelEditorStyle` is a computed that returns the input's left/top/width/height/font-size in CSS, derived from the active segment's `getLabelMetrics` rect converted to screen pixels (multiply by the canvas display scale, add the canvas wrapper's `getBoundingClientRect` left/top).
+`labelEditorStyle` is a computed that returns the input's left/top/width/height/font-size in CSS, derived from the active segment's `getLabelMetrics` rect converted to screen pixels (multiply by the canvas display scale, add the canvas wrapper's `getBoundingClientRect` left/top). The computed depends on `editingLabelDraft` so the input grows as the user types — `getLabelMetrics` is called with a synthetic segment whose `labelText` is the current draft, so what the user sees in the input matches exactly what will be rendered on commit. Capped at the segment width (existing `maxPillWidth` cap in `getLabelMetrics`); the user can still type past the cap, but the input stops growing.
 
 A `watch(editingLabelIndex)` callback, or a `nextTick` after the index is set, focuses the input and selects its text:
 

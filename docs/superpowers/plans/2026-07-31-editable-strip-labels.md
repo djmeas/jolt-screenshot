@@ -450,7 +450,9 @@ const labelEditorStyle = computed(() => {
   const seg = stripSegments.value[i]
   if (!seg) return {}
   const radius = Math.min(28, Math.max(14, canvas.height * 0.03))
-  const m = getLabelMetrics(seg, i, radius, ctx)
+  // Size the editor overlay to the current draft so the input grows as the user types.
+  const draftSeg = { ...seg, labelText: editingLabelDraft.value }
+  const m = getLabelMetrics(draftSeg, i, radius, ctx)
   const canvasRect = canvas.getBoundingClientRect()
   const wrapperRect = wrapper.getBoundingClientRect()
   const scaleX = canvasRect.width / canvas.width
