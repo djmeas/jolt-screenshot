@@ -92,7 +92,7 @@ function getLabelMetrics(seg, i, ctx, radius): {
 1. Set `fontSize = round(radius)`, `ctx.font = "bold " + fontSize + "px sans-serif"`, measure `textWidth = ctx.measureText(displayedText).width`.
 2. If `textWidth <= 2 * radius - 4` → **circle**: `isPill = false`, `rect = { x: cx - radius, y: cy - radius, w: 2 * radius, h: 2 * radius }`.
 3. Else compute `pillMaxWidth = seg.width - inset * 2`, `pillPadding = radius * 0.5`. Try `pillWidth = textWidth + 2 * pillPadding`. If `pillWidth > pillMaxWidth`, shrink: drop `fontSize` by 1px (min 8), re-measure, retry. If `fontSize` hits the floor and `pillWidth > pillMaxWidth`, ellipsize: `text = truncateWithEllipsis(original, maxChars)`, re-measure once, accept whatever width that produces (it will be ≤ pillMaxWidth in practice).
-4. Pill rect: `isPill = true`, `rect = { x: cx - pillWidth / 2, y: cy - radius, w: pillWidth, h: 2 * radius }`.
+4. Pill rect: `isPill = true`, `rect = { x: seg.x + inset, y: cy - radius, w: pillWidth, h: 2 * radius }`. The pill is **left-anchored** to the segment (same left edge as the circle), growing right; the right edge is bounded by `seg.x + seg.width - inset`.
 
 **`drawStripLabels` is rewritten** to loop segments and delegate to `getLabelMetrics` for shape decisions:
 

@@ -653,7 +653,7 @@ function getLabelMetrics(
     text,
     fontSize,
     isPill: true,
-    rect: { x: cx - pillWidth / 2, y: cy - radius, w: pillWidth, h: 2 * radius },
+    rect: { x: seg.x + inset, y: cy - radius, w: pillWidth, h: 2 * radius },
   }
 }
 
