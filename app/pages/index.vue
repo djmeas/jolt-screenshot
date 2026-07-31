@@ -64,6 +64,7 @@ const resizeStartValue = ref<{
   center?: { x: number, y: number }
 } | null>(null)
 const hoveredAnnotationIndex = ref<number | null>(null)
+const hoveredLabelIndex = ref<number | null>(null)
 
 // Text tool: show overlay input at click position (canvas coords)
 const textInputVisible = ref(false)
@@ -867,6 +868,7 @@ function resetDrawingState() {
   resizeStartPos.value = null
   resizeStartValue.value = null
   hoveredAnnotationIndex.value = null
+  hoveredLabelIndex.value = null
   textInputVisible.value = false
   textInputCanvasPos.value = null
   textInputValue.value = ''
@@ -1192,6 +1194,19 @@ function draw(e: MouseEvent | TouchEvent) {
     if (newHover !== hoveredAnnotationIndex.value) {
       hoveredAnnotationIndex.value = newHover
       redrawCanvas()
+    }
+  }
+
+  // Label hover: tracked on every mousemove so the cursor reflects hover state
+  // outside of move mode too. hitTestLabel early-returns when labels are off
+  // or an edit is open, so this is a cheap no-op in those cases.
+  if (!isPanning.value) {
+    const ctx = getCanvasContext()
+    if (ctx) {
+      const newLabelHover = hitTestLabel(x, y, ctx)
+      if (newLabelHover !== hoveredLabelIndex.value) {
+        hoveredLabelIndex.value = newLabelHover
+      }
     }
   }
 }
@@ -1931,6 +1946,7 @@ function triggerFileInput() {
 
 function onCanvasMouseLeave() {
   hoveredAnnotationIndex.value = null
+  hoveredLabelIndex.value = null
   if (toolMode.value === 'move' && !moveDragging.value && !resizeDragging.value) redrawCanvas()
 }
 
@@ -1958,6 +1974,7 @@ function setToolMode(mode: typeof toolMode.value) {
   resizeStartPos.value = null
   resizeStartValue.value = null
   hoveredAnnotationIndex.value = null
+  hoveredLabelIndex.value = null
 
   if (textInputVisible.value && mode !== 'text') {
     textInputVisible.value = false
@@ -2264,6 +2281,7 @@ function slamHandStyle() {
 const canvasCursorClass = computed(() => {
   if (isPanning.value) return 'cursor-grabbing'
   if (spacePanActive.value) return 'cursor-grab'
+  if (hoveredLabelIndex.value !== null) return 'cursor-text'
   const cursors: Record<typeof toolMode.value, string> = {
     pen: 'cursor-crosshair',
     arrow: 'cursor-crosshair',

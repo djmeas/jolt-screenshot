@@ -137,6 +137,28 @@ When `hitTestLabel` returns an index:
 3. `redrawCanvas()` (to draw the focus ring).
 4. `e.preventDefault(); e.stopPropagation(); return;` — no tool mode activates.
 
+### Hover cursor
+
+Hovering over a label changes the canvas cursor to a text I-beam (`cursor-text`) so the user can see that the label is clickable/editable. Implemented with a new `hoveredLabelIndex: ref<number | null>(null)` that is updated on every mousemove (`draw` handler, after the tool-mode branches):
+
+```ts
+if (!isPanning.value) {
+  const ctx = getCanvasContext()
+  if (ctx) {
+    const newLabelHover = hitTestLabel(x, y, ctx)
+    if (newLabelHover !== hoveredLabelIndex.value) {
+      hoveredLabelIndex.value = newLabelHover
+    }
+  }
+}
+```
+
+`hitTestLabel` already early-returns `null` when `labelsEnabled` is off or an edit is open, so the hover state naturally clears in those cases.
+
+`canvasCursorClass` returns `cursor-text` when `hoveredLabelIndex !== null` — taking priority over the per-tool cursor but yielding to active panning (`isPanning` → `cursor-grabbing`, `spacePanActive` → `cursor-grab`).
+
+`onCanvasMouseLeave` clears `hoveredLabelIndex` so the cursor resets when the mouse leaves the canvas.
+
 ### Editor overlay
 
 A single `<input>` element is rendered in the template, **always present in the DOM** and toggled with `v-show` (so it can be focused without remount):

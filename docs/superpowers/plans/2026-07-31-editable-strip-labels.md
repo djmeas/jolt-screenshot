@@ -530,7 +530,87 @@ git commit -m "Add inline editor for strip labels"
 
 ---
 
-### Task 5: README update + manual smoke test
+### Task 5: Hover cursor — show I-beam over labels
+
+When the mouse hovers a label, change the canvas cursor to a text I-beam so the user can see the label is clickable/editable. Implemented with a new `hoveredLabelIndex` ref updated on every mousemove, plus an extra branch in `canvasCursorClass`.
+
+**Files:**
+- Modify: `app/pages/index.vue:66` (add `hoveredLabelIndex` next to `hoveredAnnotationIndex`), `:870-873, :1934, :1961` (reset alongside `hoveredAnnotationIndex`), `:1146-1197` (`draw` handler, append hover-detection branch), `:2264-2277` (`canvasCursorClass`)
+
+**Interfaces:**
+- Consumes: `hitTestLabel` (from Task 3), `getCanvasContext`, `getCanvasCoords`, `labelsEnabled`, `editingLabelIndex`.
+- Produces: `hoveredLabelIndex: ref<number | null>(null)` — segment index under the mouse, or `null`. Cleared on `onCanvasMouseLeave` and on every reset site alongside `hoveredAnnotationIndex`.
+
+- [ ] **Step 1: Add the `hoveredLabelIndex` ref**
+
+In `app/pages/index.vue`, immediately after `const hoveredAnnotationIndex = ref<number | null>(null)` (line 66), insert:
+
+```ts
+const hoveredLabelIndex = ref<number | null>(null)
+```
+
+- [ ] **Step 2: Reset it everywhere `hoveredAnnotationIndex` is reset**
+
+Three sites:
+- Line 870: add `hoveredLabelIndex.value = null` immediately after the existing `hoveredAnnotationIndex.value = null`.
+- Line 1934 (`onCanvasMouseLeave`): same — add the line right after.
+- Line 1961: same.
+
+- [ ] **Step 3: Track hover in the `draw` handler**
+
+In `app/pages/index.vue`, the `draw` function ends at line 1197. After the existing `toolMode === 'move' && !moveDragging.value && !resizeDragging.value` branch's closing `}`, append:
+
+```ts
+  // Label hover: tracked on every mousemove so the cursor reflects hover state
+  // outside of move mode too. hitTestLabel early-returns when labels are off
+  // or an edit is open, so this is a cheap no-op in those cases.
+  if (!isPanning.value) {
+    const ctx = getCanvasContext()
+    if (ctx) {
+      const newLabelHover = hitTestLabel(x, y, ctx)
+      if (newLabelHover !== hoveredLabelIndex.value) {
+        hoveredLabelIndex.value = newLabelHover
+      }
+    }
+  }
+```
+
+- [ ] **Step 4: Update `canvasCursorClass` to return `cursor-text` on label hover**
+
+In `app/pages/index.vue`, modify `canvasCursorClass` (lines 2264-2276) to return `cursor-text` when `hoveredLabelIndex !== null`. Priority order: `isPanning` > `spacePanActive` > label hover > tool mode.
+
+```ts
+const canvasCursorClass = computed(() => {
+  if (isPanning.value) return 'cursor-grabbing'
+  if (spacePanActive.value) return 'cursor-grab'
+  if (hoveredLabelIndex.value !== null) return 'cursor-text'
+  const cursors: Record<typeof toolMode.value, string> = {
+    pen: 'cursor-crosshair',
+    arrow: 'cursor-crosshair',
+    box: 'cursor-crosshair',
+    emoji: 'cursor-cell',
+    text: 'cursor-text',
+    move: 'cursor-grab active:cursor-grabbing',
+  }
+  return cursors[toolMode.value]
+})
+```
+
+- [ ] **Step 5: Verify the build**
+
+Run: `pnpm build`
+Expected: exits 0.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add app/pages/index.vue
+git commit -m "Show text cursor on hover over strip labels"
+```
+
+---
+
+### Task 6: README update + manual smoke test
 
 Document the new "click a label to edit" affordance in the README, then walk through the spec's manual test checklist against `pnpm dev`.
 
