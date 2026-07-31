@@ -97,6 +97,17 @@ const trackedObjectUrls = new Set<string>()
 const showPasteDialog = ref(false)
 const pendingPasteFile = ref<File | null>(null)
 
+// Append-to-right strip state
+const STRIP_GAP = 8
+const stripSegments = ref<{ x: number, width: number }[]>([])
+const labelsEnabled = ref(true)
+const sessionLabelDefault = ref(true)
+
+function resetStripState() {
+  stripSegments.value = []
+  labelsEnabled.value = sessionLabelDefault.value
+}
+
 type PenStroke = { type: 'pen', path: { x: number, y: number }[], color: string, lineWidth: number }
 type ArrowAnnotation = { type: 'arrow', x1: number, y1: number, length: number, angle: number, color: string, lineWidth: number }
 type BoxAnnotation = { type: 'box', x: number, y: number, width: number, height: number, color: string, lineWidth: number }
@@ -655,6 +666,7 @@ function resetDrawingState() {
 
 async function replaceWithImage(fileOrUrl: File | string) {
   clearImageResources()
+  resetStripState()
   const objectUrl = typeof fileOrUrl !== 'string' ? URL.createObjectURL(fileOrUrl) : null
   const url = objectUrl ?? fileOrUrl
   try {
@@ -744,6 +756,7 @@ function clearAnnotations({ keepSaved = false, resetProject = true }: { keepSave
   closeToolbarMenu()
   clearImageResources()
   resetDrawingState()
+  resetStripState()
   hasImage.value = false
   const canvas = getCanvas()
   if (canvas) {
@@ -1383,6 +1396,9 @@ async function performSave(opts: { silent?: boolean } = {}): Promise<boolean> {
       baseImage: baseImageData,
       layers,
       annotations: JSON.parse(JSON.stringify(annotations.value)),
+      strip: stripSegments.value.length > 1
+        ? { segments: stripSegments.value.map(s => ({ ...s })), labelsEnabled: labelsEnabled.value }
+        : undefined,
       settings: buildSavedSettings(),
       thumbDataUrl: makeThumbnailFromCanvas(canvas),
     })
@@ -1437,6 +1453,7 @@ async function loadSavedProjectIntoCanvas(id: string) {
     resetDrawingState()
     hasImage.value = false
   }
+  resetStripState()
   const canvas = getCanvas()
   const ctx = getCanvasContext()
   if (!canvas || !ctx) return
@@ -1475,6 +1492,11 @@ async function loadSavedProjectIntoCanvas(id: string) {
     strokeWidth.value = saved.settings.strokeWidth
     textFontSize.value = saved.settings.textFontSize
     emojiSize.value = saved.settings.emojiSize
+
+    if (saved.strip && saved.strip.segments.length > 1) {
+      stripSegments.value = saved.strip.segments.map(s => ({ ...s }))
+      labelsEnabled.value = saved.strip.labelsEnabled
+    }
 
     projectId.value = saved.id
     projectName.value = saved.name
