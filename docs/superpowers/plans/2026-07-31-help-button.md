@@ -147,9 +147,10 @@ const showHelp = ref(false)
 const helpButtonRef = ref<HTMLButtonElement | null>(null)
 const helpCardRef = ref<HTMLDivElement | null>(null)
 let previouslyFocusedElement: HTMLElement | null = null
+let helpKeydownCleanup: (() => void) | null = null
 ```
 
-Place `helpButtonRef` next to the other toolbar refs. The `previouslyFocusedElement` lives at module scope but is not a `ref` — it's a plain `let` because changes to it don't need to trigger re-renders.
+Place `helpButtonRef` next to the other toolbar refs. The `previouslyFocusedElement` and `helpKeydownCleanup` live at module scope as plain `let`s — they're not reactive state, just bookkeeping for the open/close lifecycle.
 
 - [ ] **Step 2: Add the `?` button to the desktop toolbar**
 
@@ -225,17 +226,14 @@ watch(showHelp, async (isOpen) => {
       if (e.key === 'Escape') showHelp.value = false
     }
     window.addEventListener('keydown', onKeydown)
-    ;(showHelp as any)._cleanup = () => {
-      window.removeEventListener('keydown', onKeydown)
-    }
+    helpKeydownCleanup = () => window.removeEventListener('keydown', onKeydown)
     await nextTick()
     helpCardRef.value?.focus()
   } else {
     document.body.style.overflow = ''
-    const cleanup = (showHelp as any)._cleanup as (() => void) | undefined
-    if (cleanup) {
-      cleanup()
-      ;(showHelp as any)._cleanup = null
+    if (helpKeydownCleanup) {
+      helpKeydownCleanup()
+      helpKeydownCleanup = null
     }
     if (previouslyFocusedElement && previouslyFocusedElement.isConnected) {
       previouslyFocusedElement.focus()
@@ -248,7 +246,7 @@ watch(showHelp, async (isOpen) => {
 ```
 
 Notes:
-- The `_cleanup` property is a lightweight way to attach the `keydown` listener cleanup to the ref without declaring a separate module-scope variable. Alternative: a `let helpKeydownCleanup: (() => void) | null = null` at module scope — pick that style if your reviewer prefers not to extend the ref. Either is fine.
+- `helpKeydownCleanup` is a module-scope `let` declared in Step 1, not a property stashed on the ref. The cleanup runs both on the close branch of this watcher and on any future unmount path.
 - `previouslyFocusedElement` is captured on open and used on close. The `isConnected` check guards against the originating element having been unmounted between open and close.
 
 - [ ] **Step 5: Make the modal card focusable**
