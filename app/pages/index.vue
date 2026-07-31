@@ -70,6 +70,7 @@ const textInputVisible = ref(false)
 const textInputCanvasPos = ref<{ x: number, y: number } | null>(null)
 const textInputValue = ref('')
 const textInputRef = ref<HTMLTextAreaElement | null>(null)
+const labelEditorInputRef = ref<HTMLInputElement | null>(null)
 
 // Arrow placement state
 const arrowStart = ref<{ x: number, y: number } | null>(null)
@@ -113,9 +114,37 @@ function displayedLabelText(seg: { labelText: string }, i: number): string {
   return seg.labelText || String(i + 1)
 }
 
-// Temporary stub — real implementation lands in Task 4.
 function commitLabelEdit() {
-  // Implemented in Task 4.
+  const i = editingLabelIndex.value
+  if (i == null) return
+  const next = editingLabelDraft.value.trim()
+  if (next !== stripSegments.value[i]!.labelText) {
+    stripSegments.value = stripSegments.value.map((s, idx) =>
+      idx === i ? { ...s, labelText: next } : s,
+    )
+  }
+  editingLabelIndex.value = null
+  editingLabelDraft.value = ''
+  redrawCanvas()
+  scheduleAutoSave()
+}
+
+function cancelLabelEdit() {
+  editingLabelIndex.value = null
+  editingLabelDraft.value = ''
+  redrawCanvas()
+}
+
+function onLabelEditorTab(e: KeyboardEvent) {
+  const i = editingLabelIndex.value
+  if (i == null) return
+  const total = stripSegments.value.length
+  const next = e.shiftKey ? (i - 1 + total) % total : (i + 1) % total
+  commitLabelEdit()
+  editingLabelIndex.value = next
+  editingLabelDraft.value = displayedLabelText(stripSegments.value[next]!, next)
+  redrawCanvas()
+  nextTick(() => labelEditorInputRef.value?.focus())
 }
 
 function resetStripState() {
@@ -163,6 +192,10 @@ function undo() {
 
 function toggleStripLabels() {
   labelsEnabled.value = !labelsEnabled.value
+  if (!labelsEnabled.value) {
+    editingLabelIndex.value = null
+    editingLabelDraft.value = ''
+  }
   redrawCanvas()
   scheduleAutoSave()
 }
@@ -1286,6 +1319,38 @@ const textInputStyle = computed(() => {
     fontSize: `${textFontSize.value}px`,
     color: strokeColor.value
   }
+})
+
+const labelEditorStyle = computed(() => {
+  const canvas = getCanvas()
+  const wrapper = canvasWrapperRef.value
+  if (!canvas || !wrapper) return {}
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return {}
+  const i = editingLabelIndex.value
+  if (i == null) return {}
+  const seg = stripSegments.value[i]
+  if (!seg) return {}
+  const radius = Math.min(28, Math.max(14, canvas.height * 0.03))
+  const m = getLabelMetrics(seg, i, radius, ctx)
+  const canvasRect = canvas.getBoundingClientRect()
+  const wrapperRect = wrapper.getBoundingClientRect()
+  const scaleX = canvasRect.width / canvas.width
+  const scaleY = canvasRect.height / canvas.height
+  return {
+    left: `${canvasRect.left - wrapperRect.left + m.rect.x * scaleX}px`,
+    top: `${canvasRect.top - wrapperRect.top + m.rect.y * scaleY}px`,
+    width: `${m.rect.w * scaleX}px`,
+    height: `${m.rect.h * scaleY}px`,
+    fontSize: `${m.fontSize * scaleY}px`,
+  }
+})
+
+watch(editingLabelIndex, async (idx) => {
+  if (idx == null) return
+  await nextTick()
+  labelEditorInputRef.value?.focus()
+  labelEditorInputRef.value?.select()
 })
 
 function commitText() {
@@ -3011,6 +3076,22 @@ onUnmounted(() => {
           rows="3"
           @blur="commitText"
           @keydown="onTextInputKeydown"
+        />
+
+        <!-- Strip label editor overlay -->
+        <input
+          v-show="editingLabelIndex !== null"
+          ref="labelEditorInputRef"
+          v-model="editingLabelDraft"
+          type="text"
+          maxlength="64"
+          class="absolute z-20 px-2 border-2 border-indigo-500 rounded shadow-xl outline-none text-center"
+          :class="[isDark ? 'bg-zinc-900/95 text-white' : 'bg-white/95 text-slate-900']"
+          :style="labelEditorStyle"
+          @keydown.enter.prevent="commitLabelEdit"
+          @keydown.escape.prevent="cancelLabelEdit"
+          @keydown.tab.prevent="onLabelEditorTab"
+          @blur="commitLabelEdit"
         />
 
         <!-- Contextual hints -->
