@@ -7,6 +7,7 @@ import {
   type SavedSettings,
   deleteSavedProject,
   estimateStorageUsage,
+  formatBytes,
   getSavedProject,
   listSavedProjects,
   makeThumbnailFromCanvas,
@@ -16,6 +17,14 @@ import {
 } from '~/composables/useProjectStorage'
 
 const { isDark, setColorMode } = useColorMode()
+
+const MAX_IMAGE_PIXELS = 16_000_000  // ~16 megapixels (e.g. 4000x4000)
+const MAX_IMAGE_BYTES_ESTIMATE = 8_000_000  // ~8 MB PNG in localStorage
+
+function formatPixels(w: number, h: number): string {
+  const mp = (w * h) / 1_000_000
+  return `${mp.toFixed(1)} MP`
+}
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const canvasWrapperRef = ref<HTMLDivElement | null>(null)
@@ -180,8 +189,36 @@ const quotaError = ref<string | null>(null)
 const pendingClearSaved = ref(false)
 
 function pushAnnotationState() {
-  annotationHistory.value.push(JSON.parse(JSON.stringify(annotations.value)))
+  const clone = JSON.parse(JSON.stringify(annotations.value))
+  const total = snapshotSize(clone)
+  if (total > MAX_UNDO_POINTS_PER_SNAPSHOT) {
+    downsamplePenStrokesInPlace(clone, 1000)
+  }
+  pushWithCap(annotationHistory.value, clone, MAX_UNDO_DEPTH)
   scheduleAutoSave()
+}
+
+function snapshotSize(anns: Annotation[]): number {
+  let n = 0
+  for (const a of anns) {
+    if (a.type === 'pen') n += a.path.length
+    else n += 1
+  }
+  return n
+}
+
+function downsamplePenStrokesInPlace(anns: Annotation[], perStrokeMax: number): void {
+  for (const a of anns) {
+    if (a.type === 'pen' && a.path.length > perStrokeMax) {
+      const stride = Math.ceil(a.path.length / perStrokeMax)
+      a.path = a.path.filter((_, i) => i % stride === 0)
+    }
+  }
+}
+
+function pushWithCap<T>(stack: T[], item: T, cap: number): void {
+  stack.push(item)
+  while (stack.length > cap) stack.shift()
 }
 
 function undo() {
@@ -519,22 +556,25 @@ function onNavigatorPan(imageX: number, imageY: number) {
   applyZoomTransform()
 }
 
-function getCanvasCoords(e: MouseEvent | TouchEvent) {
+function getCanvasCoords(e: MouseEvent | TouchEvent): { x: number, y: number } | null {
   const canvas = getCanvas()
   if (!canvas) return { x: 0, y: 0 }
+  const pt = 'touches' in e ? e.touches[0] : e
+  if (!pt) return null
   const rect = canvas.getBoundingClientRect()
   const scaleX = canvas.width / rect.width
   const scaleY = canvas.height / rect.height
-  if ('touches' in e) {
-    return {
-      x: (e.touches[0].clientX - rect.left) * scaleX,
-      y: (e.touches[0].clientY - rect.top) * scaleY
-    }
-  }
   return {
-    x: (e.clientX - rect.left) * scaleX,
-    y: (e.clientY - rect.top) * scaleY
+    x: (pt.clientX - rect.left) * scaleX,
+    y: (pt.clientY - rect.top) * scaleY,
   }
+}
+
+function primaryTouch(e: MouseEvent | TouchEvent): { clientX: number, clientY: number } | null {
+  if ('touches' in e) {
+    return e.touches[0] ?? null
+  }
+  return e
 }
 
 function drawArrowHead(ctx: CanvasRenderingContext2D, from: { x: number, y: number }, to: { x: number, y: number }, color: string, lineWidth: number) {
@@ -882,12 +922,18 @@ function resetDrawingState() {
 }
 
 async function replaceWithImage(fileOrUrl: File | string) {
+  invalidateAutoSave()
   clearImageResources()
   resetStripState()
   const objectUrl = typeof fileOrUrl !== 'string' ? URL.createObjectURL(fileOrUrl) : null
   const url = objectUrl ?? fileOrUrl
   try {
     const img = await loadImageElement(url)
+    if (img.naturalWidth * img.naturalHeight > MAX_IMAGE_PIXELS) {
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+      quotaError.value = `That image is ${formatPixels(img.naturalWidth, img.naturalHeight)} which is over the ${formatPixels(MAX_IMAGE_PIXELS, 1)} limit. Try a smaller crop or lower-DPI screenshot.`
+      return
+    }
     const canvas = getCanvas()
     const ctx = getCanvasContext()
     if (!canvas || !ctx) return
@@ -919,6 +965,11 @@ async function addImageAsLayer(file: File) {
   const objectUrl = URL.createObjectURL(file)
   try {
     const img = await loadImageElement(objectUrl)
+    if (img.naturalWidth * img.naturalHeight > MAX_IMAGE_PIXELS) {
+      URL.revokeObjectURL(objectUrl)
+      quotaError.value = `That image is ${formatPixels(img.naturalWidth, img.naturalHeight)} which is over the ${formatPixels(MAX_IMAGE_PIXELS, 1)} limit.`
+      return
+    }
     const id = crypto.randomUUID()
     registerImageElement(id, img, objectUrl)
     const placement = computeLayerPlacement(img.naturalWidth, img.naturalHeight, canvas.width, canvas.height)
@@ -947,6 +998,11 @@ async function appendImageToRight(file: File) {
   const objectUrl = URL.createObjectURL(file)
   try {
     const img = await loadImageElement(objectUrl)
+    if (img.naturalWidth * img.naturalHeight > MAX_IMAGE_PIXELS) {
+      URL.revokeObjectURL(objectUrl)
+      quotaError.value = `That image is ${formatPixels(img.naturalWidth, img.naturalHeight)} which is over the ${formatPixels(MAX_IMAGE_PIXELS, 1)} limit.`
+      return
+    }
     const oldWidth = canvas.width
     const oldHeight = canvas.height
     const newWidth = oldWidth + STRIP_GAP + img.naturalWidth
@@ -1050,6 +1106,7 @@ function clearAnnotations({ keepSaved = false, resetProject = true }: { keepSave
     refreshSavedList()
   }
   if (resetProject) {
+    invalidateAutoSave()
     projectId.value = newProjectId()
     projectCreatedAt.value = Date.now()
     projectName.value = 'Untitled'
@@ -1062,13 +1119,16 @@ function startDrawing(e: MouseEvent | TouchEvent) {
   if (!hasImage.value) return
 
   if (spacePanActive.value) {
-    const pt = 'touches' in e ? e.touches[0] : e
-    panStart.value = { x: pt.clientX, y: pt.clientY, viewX: viewX.value, viewY: viewY.value }
+    const touch = primaryTouch(e)
+    if (!touch) return
+    panStart.value = { x: touch.clientX, y: touch.clientY, viewX: viewX.value, viewY: viewY.value }
     isPanning.value = true
     return
   }
 
-  const { x, y } = getCanvasCoords(e)
+  const coords = getCanvasCoords(e)
+  if (!coords) return
+  const { x, y } = coords
   const ctx = getCanvasContext()
   if (ctx) {
     const labelIdx = hitTestLabel(x, y, ctx)
@@ -1155,14 +1215,17 @@ function draw(e: MouseEvent | TouchEvent) {
   if (!hasImage.value) return
 
   if (isPanning.value && panStart.value) {
-    const pt = 'touches' in e ? e.touches[0] : e
-    viewX.value = panStart.value.viewX - (pt.clientX - panStart.value.x) / displayScale.value
-    viewY.value = panStart.value.viewY - (pt.clientY - panStart.value.y) / displayScale.value
+    const touch = primaryTouch(e)
+    if (!touch) return
+    viewX.value = panStart.value.viewX - (touch.clientX - panStart.value.x) / displayScale.value
+    viewY.value = panStart.value.viewY - (touch.clientY - panStart.value.y) / displayScale.value
     applyZoomTransform()
     return
   }
 
-  const { x, y } = getCanvasCoords(e)
+  const coords = getCanvasCoords(e)
+  if (!coords) return
+  const { x, y } = coords
 
   if (toolMode.value === 'pen' && isDrawing.value) {
     currentPath.value = [...currentPath.value, { x, y }]
@@ -1299,7 +1362,9 @@ function onCanvasClick(e: MouseEvent) {
   if (!hasImage.value) return
   if (spacePanActive.value) return
   if (toolMode.value === 'move') return
-  const { x, y } = getCanvasCoords(e)
+  const coords = getCanvasCoords(e)
+  if (!coords) return
+  const { x, y } = coords
 
   if (toolMode.value === 'emoji' && pendingEmoji.value) {
     pushAnnotationState()
@@ -1457,6 +1522,8 @@ function hitTestBox(box: BoxAnnotation, x: number, y: number): boolean {
 
 const RESIZE_HANDLE_RADIUS = 24
 const RESIZE_HANDLE_DRAW_RADIUS = 12
+const MAX_UNDO_DEPTH = 100
+const MAX_UNDO_POINTS_PER_SNAPSHOT = 50_000
 
 function getAnnotationIndexByResizeHandle(canvasX: number, canvasY: number): number | null {
   for (let i = annotations.value.length - 1; i >= 0; i--) {
@@ -1746,6 +1813,8 @@ function buildSavedSettings(): SavedSettings {
 async function performSave(opts: { silent?: boolean } = {}): Promise<boolean> {
   const canvas = getCanvas()
   if (!canvas || !hasImage.value) return false
+  const generationAtStart = autoSaveGeneration
+  const idAtStart = projectId.value
   saveStatus.value = 'saving'
   try {
     const baseImageData = await buildSavedBaseImage()
@@ -1755,8 +1824,9 @@ async function performSave(opts: { silent?: boolean } = {}): Promise<boolean> {
       return false
     }
     const layers = await buildSavedLayers()
+    if (generationAtStart !== autoSaveGeneration) return false
     const result = saveProject({
-      id: projectId.value,
+      id: idAtStart,
       name: projectName.value || 'Untitled',
       createdAt: projectCreatedAt.value,
       width: canvas.width,
@@ -1773,7 +1843,7 @@ async function performSave(opts: { silent?: boolean } = {}): Promise<boolean> {
     if (!result.ok) {
       saveStatus.value = 'error'
       if (result.reason === 'quota') {
-        quotaError.value = 'Browser storage is full. Delete a saved project to free space.'
+        quotaError.value = `Browser storage is full (${formatBytes(estimateStorageUsage())} used). Delete a saved project to free space, or try a smaller image.`
       } else {
         quotaError.value = 'Could not save project.'
       }
@@ -1797,13 +1867,26 @@ async function performSave(opts: { silent?: boolean } = {}): Promise<boolean> {
 }
 
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
+let autoSaveGeneration = 0
+
+function invalidateAutoSave() {
+  autoSaveGeneration++
+  if (autoSaveTimer) {
+    clearTimeout(autoSaveTimer)
+    autoSaveTimer = null
+  }
+  saveStatus.value = 'idle'
+}
 
 function scheduleAutoSave() {
   if (!hasImage.value) return
+  const generation = autoSaveGeneration
   if (autoSaveTimer) clearTimeout(autoSaveTimer)
   saveStatus.value = 'saving'
-  autoSaveTimer = setTimeout(() => {
-    performSave({ silent: true })
+  autoSaveTimer = setTimeout(async () => {
+    if (generation !== autoSaveGeneration) return
+    autoSaveTimer = null
+    await performSave({ silent: true })
   }, 1000)
 }
 
@@ -1814,13 +1897,12 @@ function refreshSavedList() {
 }
 
 async function loadSavedProjectIntoCanvas(id: string) {
+  invalidateAutoSave()
   const saved = getSavedProject(id)
   if (!saved) return
-  if (hasImage.value) {
-    clearImageResources()
-    resetDrawingState()
-    hasImage.value = false
-  }
+  clearImageResources()
+  resetDrawingState()
+  hasImage.value = false
   resetStripState()
   const canvas = getCanvas()
   const ctx = getCanvasContext()
@@ -1833,6 +1915,7 @@ async function loadSavedProjectIntoCanvas(id: string) {
     canvas.width = saved.width
     canvas.height = saved.height
     const objectUrl = URL.createObjectURL(await (await fetch(saved.baseImage.dataUrl)).blob())
+    trackedObjectUrls.add(objectUrl)
     baseImage.value = { objectUrl, image: img }
     hasImage.value = true
     resetZoom()
@@ -1841,6 +1924,7 @@ async function loadSavedProjectIntoCanvas(id: string) {
       try {
         const layerImg = await loadImageElement(layer.dataUrl)
         const layerObjectUrl = URL.createObjectURL(await (await fetch(layer.dataUrl)).blob())
+        trackedObjectUrls.add(layerObjectUrl)
         const placement = computeLayerPlacement(layer.naturalWidth, layer.naturalHeight, canvas.width, canvas.height)
         annotations.value = [...annotations.value, {
           type: 'image',
@@ -1876,12 +1960,18 @@ async function loadSavedProjectIntoCanvas(id: string) {
     })
   } catch (err) {
     console.error('Failed to load saved project:', err)
+    for (const url of [...trackedObjectUrls]) {
+      if (!url.startsWith('blob:')) continue
+      URL.revokeObjectURL(url)
+      trackedObjectUrls.delete(url)
+    }
     quotaError.value = 'Could not load saved project.'
   }
 }
 
 function handleDeleteSaved(id: string) {
   if (id === projectId.value) {
+    invalidateAutoSave()
     projectId.value = newProjectId()
     projectCreatedAt.value = Date.now()
     projectName.value = 'Untitled'
@@ -1897,6 +1987,7 @@ function handleRenameSaved(payload: { id: string, name: string }) {
 }
 
 function startNewProject() {
+  invalidateAutoSave()
   projectId.value = newProjectId()
   projectCreatedAt.value = Date.now()
   projectName.value = 'Untitled'
@@ -2418,6 +2509,14 @@ function handleKeyup(e: KeyboardEvent) {
 }
 
 let canvasResizeObserver: ResizeObserver | null = null
+let touchAbortController: AbortController | null = null
+
+function attachCanvasTouchListeners(target: HTMLCanvasElement, signal: AbortSignal) {
+  target.addEventListener('touchstart', startDrawing, { passive: false, signal })
+  target.addEventListener('touchmove', draw, { passive: false, signal })
+  target.addEventListener('touchend', stopDrawing, { passive: false, signal })
+  target.addEventListener('touchcancel', stopDrawing, { passive: false, signal })
+}
 
 onMounted(() => {
   window.addEventListener('paste', handlePaste)
@@ -2426,6 +2525,11 @@ onMounted(() => {
   document.addEventListener('click', onDocumentClick)
   window.addEventListener('resize', updateAllPickerIndicators)
   canvasWrapperRef.value?.addEventListener('wheel', onCanvasWheel, { passive: false })
+
+  touchAbortController = new AbortController()
+  if (canvasRef.value) {
+    attachCanvasTouchListeners(canvasRef.value, touchAbortController.signal)
+  }
 
   canvasResizeObserver = new ResizeObserver(() => {
     updateCanvasDisplaySize()
@@ -2466,6 +2570,8 @@ onUnmounted(() => {
   if (strokePickAnimTimer) clearTimeout(strokePickAnimTimer)
   if (imageSlamTimer) clearTimeout(imageSlamTimer)
   if (autoSaveTimer) clearTimeout(autoSaveTimer)
+  touchAbortController?.abort()
+  touchAbortController = null
   canvasResizeObserver?.disconnect()
   clearImageResources()
 })
@@ -3122,9 +3228,6 @@ watch(showHelp, async (isOpen) => {
           @mouseup="stopDrawing"
           @mouseleave="(e) => { onCanvasMouseLeave(); stopDrawing(e); }"
           @click="onCanvasClick"
-          @touchstart="startDrawing"
-          @touchmove="draw"
-          @touchend="stopDrawing"
         />
 
         <!-- Text input overlay -->
