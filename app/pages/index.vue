@@ -1846,11 +1846,9 @@ function refreshSavedList() {
 async function loadSavedProjectIntoCanvas(id: string) {
   const saved = getSavedProject(id)
   if (!saved) return
-  if (hasImage.value) {
-    clearImageResources()
-    resetDrawingState()
-    hasImage.value = false
-  }
+  clearImageResources()
+  resetDrawingState()
+  hasImage.value = false
   resetStripState()
   const canvas = getCanvas()
   const ctx = getCanvasContext()
@@ -1863,6 +1861,7 @@ async function loadSavedProjectIntoCanvas(id: string) {
     canvas.width = saved.width
     canvas.height = saved.height
     const objectUrl = URL.createObjectURL(await (await fetch(saved.baseImage.dataUrl)).blob())
+    trackedObjectUrls.add(objectUrl)
     baseImage.value = { objectUrl, image: img }
     hasImage.value = true
     resetZoom()
@@ -1871,6 +1870,7 @@ async function loadSavedProjectIntoCanvas(id: string) {
       try {
         const layerImg = await loadImageElement(layer.dataUrl)
         const layerObjectUrl = URL.createObjectURL(await (await fetch(layer.dataUrl)).blob())
+        trackedObjectUrls.add(layerObjectUrl)
         const placement = computeLayerPlacement(layer.naturalWidth, layer.naturalHeight, canvas.width, canvas.height)
         annotations.value = [...annotations.value, {
           type: 'image',
@@ -1906,6 +1906,11 @@ async function loadSavedProjectIntoCanvas(id: string) {
     })
   } catch (err) {
     console.error('Failed to load saved project:', err)
+    for (const url of [...trackedObjectUrls]) {
+      if (!url.startsWith('blob:')) continue
+      URL.revokeObjectURL(url)
+      trackedObjectUrls.delete(url)
+    }
     quotaError.value = 'Could not load saved project.'
   }
 }
