@@ -75,6 +75,15 @@ pnpm preview
 - **HTML5 Canvas** – Drawing and image manipulation
 - **Clipboard API** – Copy annotated images
 
+## Security
+
+The app is a static SPA served by nginx with a baseline
+`Content-Security-Policy` that allows only resources from the same origin
+plus `data:` and `blob:` URLs (the latter are required for clipboard image
+pastes). If you add a third-party asset (font CDN, analytics script, emoji
+library) you must update the CSP in `nginx.conf` to allow its source — see
+the comment block at the top of the policy for the affected directives.
+
 ## License
 
 Private – see repository for details.
