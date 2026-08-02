@@ -2418,6 +2418,14 @@ function handleKeyup(e: KeyboardEvent) {
 }
 
 let canvasResizeObserver: ResizeObserver | null = null
+let touchAbortController: AbortController | null = null
+
+function attachCanvasTouchListeners(target: HTMLCanvasElement, signal: AbortSignal) {
+  target.addEventListener('touchstart', startDrawing, { passive: false, signal })
+  target.addEventListener('touchmove', draw, { passive: false, signal })
+  target.addEventListener('touchend', stopDrawing, { passive: false, signal })
+  target.addEventListener('touchcancel', stopDrawing, { passive: false, signal })
+}
 
 onMounted(() => {
   window.addEventListener('paste', handlePaste)
@@ -2426,6 +2434,11 @@ onMounted(() => {
   document.addEventListener('click', onDocumentClick)
   window.addEventListener('resize', updateAllPickerIndicators)
   canvasWrapperRef.value?.addEventListener('wheel', onCanvasWheel, { passive: false })
+
+  touchAbortController = new AbortController()
+  if (canvasRef.value) {
+    attachCanvasTouchListeners(canvasRef.value, touchAbortController.signal)
+  }
 
   canvasResizeObserver = new ResizeObserver(() => {
     updateCanvasDisplaySize()
@@ -2466,6 +2479,8 @@ onUnmounted(() => {
   if (strokePickAnimTimer) clearTimeout(strokePickAnimTimer)
   if (imageSlamTimer) clearTimeout(imageSlamTimer)
   if (autoSaveTimer) clearTimeout(autoSaveTimer)
+  touchAbortController?.abort()
+  touchAbortController = null
   canvasResizeObserver?.disconnect()
   clearImageResources()
 })
@@ -3122,9 +3137,6 @@ watch(showHelp, async (isOpen) => {
           @mouseup="stopDrawing"
           @mouseleave="(e) => { onCanvasMouseLeave(); stopDrawing(e); }"
           @click="onCanvasClick"
-          @touchstart="startDrawing"
-          @touchmove="draw"
-          @touchend="stopDrawing"
         />
 
         <!-- Text input overlay -->
