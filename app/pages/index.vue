@@ -7,6 +7,7 @@ import {
   type SavedSettings,
   deleteSavedProject,
   estimateStorageUsage,
+  formatBytes,
   getSavedProject,
   listSavedProjects,
   makeThumbnailFromCanvas,
@@ -16,6 +17,14 @@ import {
 } from '~/composables/useProjectStorage'
 
 const { isDark, setColorMode } = useColorMode()
+
+const MAX_IMAGE_PIXELS = 16_000_000  // ~16 megapixels (e.g. 4000x4000)
+const MAX_IMAGE_BYTES_ESTIMATE = 8_000_000  // ~8 MB PNG in localStorage
+
+function formatPixels(w: number, h: number): string {
+  const mp = (w * h) / 1_000_000
+  return `${mp.toFixed(1)} MP`
+}
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const canvasWrapperRef = ref<HTMLDivElement | null>(null)
@@ -919,6 +928,11 @@ async function replaceWithImage(fileOrUrl: File | string) {
   const url = objectUrl ?? fileOrUrl
   try {
     const img = await loadImageElement(url)
+    if (img.naturalWidth * img.naturalHeight > MAX_IMAGE_PIXELS) {
+      if (objectUrl) URL.revokeObjectURL(objectUrl)
+      quotaError.value = `That image is ${formatPixels(img.naturalWidth, img.naturalHeight)} which is over the ${formatPixels(MAX_IMAGE_PIXELS, 1)} limit. Try a smaller crop or lower-DPI screenshot.`
+      return
+    }
     const canvas = getCanvas()
     const ctx = getCanvasContext()
     if (!canvas || !ctx) return
@@ -950,6 +964,11 @@ async function addImageAsLayer(file: File) {
   const objectUrl = URL.createObjectURL(file)
   try {
     const img = await loadImageElement(objectUrl)
+    if (img.naturalWidth * img.naturalHeight > MAX_IMAGE_PIXELS) {
+      URL.revokeObjectURL(objectUrl)
+      quotaError.value = `That image is ${formatPixels(img.naturalWidth, img.naturalHeight)} which is over the ${formatPixels(MAX_IMAGE_PIXELS, 1)} limit.`
+      return
+    }
     const id = crypto.randomUUID()
     registerImageElement(id, img, objectUrl)
     const placement = computeLayerPlacement(img.naturalWidth, img.naturalHeight, canvas.width, canvas.height)
@@ -978,6 +997,11 @@ async function appendImageToRight(file: File) {
   const objectUrl = URL.createObjectURL(file)
   try {
     const img = await loadImageElement(objectUrl)
+    if (img.naturalWidth * img.naturalHeight > MAX_IMAGE_PIXELS) {
+      URL.revokeObjectURL(objectUrl)
+      quotaError.value = `That image is ${formatPixels(img.naturalWidth, img.naturalHeight)} which is over the ${formatPixels(MAX_IMAGE_PIXELS, 1)} limit.`
+      return
+    }
     const oldWidth = canvas.width
     const oldHeight = canvas.height
     const newWidth = oldWidth + STRIP_GAP + img.naturalWidth
@@ -1814,7 +1838,7 @@ async function performSave(opts: { silent?: boolean } = {}): Promise<boolean> {
     if (!result.ok) {
       saveStatus.value = 'error'
       if (result.reason === 'quota') {
-        quotaError.value = 'Browser storage is full. Delete a saved project to free space.'
+        quotaError.value = `Browser storage is full (${formatBytes(estimateStorageUsage())} used). Delete a saved project to free space, or try a smaller image.`
       } else {
         quotaError.value = 'Could not save project.'
       }
