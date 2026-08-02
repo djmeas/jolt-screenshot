@@ -15,7 +15,7 @@ import {
   saveProject,
 } from '~/composables/useProjectStorage'
 
-const { isDark } = useColorMode()
+const { isDark, setColorMode } = useColorMode()
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const canvasWrapperRef = ref<HTMLDivElement | null>(null)
