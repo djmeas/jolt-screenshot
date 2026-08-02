@@ -180,8 +180,36 @@ const quotaError = ref<string | null>(null)
 const pendingClearSaved = ref(false)
 
 function pushAnnotationState() {
-  annotationHistory.value.push(JSON.parse(JSON.stringify(annotations.value)))
+  const clone = JSON.parse(JSON.stringify(annotations.value))
+  const total = snapshotSize(clone)
+  if (total > MAX_UNDO_POINTS_PER_SNAPSHOT) {
+    downsamplePenStrokesInPlace(clone, 1000)
+  }
+  pushWithCap(annotationHistory.value, clone, MAX_UNDO_DEPTH)
   scheduleAutoSave()
+}
+
+function snapshotSize(anns: Annotation[]): number {
+  let n = 0
+  for (const a of anns) {
+    if (a.type === 'pen') n += a.path.length
+    else n += 1
+  }
+  return n
+}
+
+function downsamplePenStrokesInPlace(anns: Annotation[], perStrokeMax: number): void {
+  for (const a of anns) {
+    if (a.type === 'pen' && a.path.length > perStrokeMax) {
+      const stride = Math.ceil(a.path.length / perStrokeMax)
+      a.path = a.path.filter((_, i) => i % stride === 0)
+    }
+  }
+}
+
+function pushWithCap<T>(stack: T[], item: T, cap: number): void {
+  stack.push(item)
+  while (stack.length > cap) stack.shift()
 }
 
 function undo() {
@@ -1457,6 +1485,8 @@ function hitTestBox(box: BoxAnnotation, x: number, y: number): boolean {
 
 const RESIZE_HANDLE_RADIUS = 24
 const RESIZE_HANDLE_DRAW_RADIUS = 12
+const MAX_UNDO_DEPTH = 100
+const MAX_UNDO_POINTS_PER_SNAPSHOT = 50_000
 
 function getAnnotationIndexByResizeHandle(canvasX: number, canvasY: number): number | null {
   for (let i = annotations.value.length - 1; i >= 0; i--) {
