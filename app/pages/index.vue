@@ -15,7 +15,7 @@ import {
   saveProject,
 } from '~/composables/useProjectStorage'
 
-const { isDark } = useColorMode()
+const { isDark, setColorMode } = useColorMode()
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 const canvasWrapperRef = ref<HTMLDivElement | null>(null)
@@ -64,12 +64,14 @@ const resizeStartValue = ref<{
   center?: { x: number, y: number }
 } | null>(null)
 const hoveredAnnotationIndex = ref<number | null>(null)
+const hoveredLabelIndex = ref<number | null>(null)
 
 // Text tool: show overlay input at click position (canvas coords)
 const textInputVisible = ref(false)
 const textInputCanvasPos = ref<{ x: number, y: number } | null>(null)
 const textInputValue = ref('')
 const textInputRef = ref<HTMLTextAreaElement | null>(null)
+const labelEditorInputRef = ref<HTMLInputElement | null>(null)
 
 // Arrow placement state
 const arrowStart = ref<{ x: number, y: number } | null>(null)
@@ -96,14 +98,62 @@ const imageElementCache = new Map<string, HTMLImageElement>()
 const trackedObjectUrls = new Set<string>()
 const showPasteDialog = ref(false)
 const pendingPasteFile = ref<File | null>(null)
+const showHelp = ref(false)
+const helpButtonRef = ref<HTMLButtonElement | null>(null)
+const helpCardRef = ref<HTMLDivElement | null>(null)
+let previouslyFocusedElement: HTMLElement | null = null
+let helpKeydownCleanup: (() => void) | null = null
 
 // Append-to-right strip state
 const STRIP_GAP = 8
-const stripSegments = ref<{ x: number, width: number }[]>([])
+const LABEL_MIN_FONT = 8
+const LABEL_PILL_PADDING_RATIO = 0.5
+const LABEL_FOCUS_RING_COLOR = '#6366f1'
+const stripSegments = ref<{ x: number, width: number, labelText: string }[]>([])
 const labelsEnabled = ref(true)
 const sessionLabelDefault = ref(true)
+const editingLabelIndex = ref<number | null>(null)
+const editingLabelDraft = ref('')
+
+function displayedLabelText(seg: { labelText: string }, i: number): string {
+  return seg.labelText || String(i + 1)
+}
+
+function commitLabelEdit() {
+  const i = editingLabelIndex.value
+  if (i == null) return
+  const next = editingLabelDraft.value.trim()
+  if (next !== stripSegments.value[i]!.labelText) {
+    stripSegments.value = stripSegments.value.map((s, idx) =>
+      idx === i ? { ...s, labelText: next } : s,
+    )
+  }
+  editingLabelIndex.value = null
+  editingLabelDraft.value = ''
+  redrawCanvas()
+  scheduleAutoSave()
+}
+
+function cancelLabelEdit() {
+  editingLabelIndex.value = null
+  editingLabelDraft.value = ''
+  redrawCanvas()
+}
+
+function onLabelEditorTab(e: KeyboardEvent) {
+  const i = editingLabelIndex.value
+  if (i == null) return
+  const total = stripSegments.value.length
+  const next = e.shiftKey ? (i - 1 + total) % total : (i + 1) % total
+  commitLabelEdit()
+  editingLabelIndex.value = next
+  editingLabelDraft.value = displayedLabelText(stripSegments.value[next]!, next)
+  redrawCanvas()
+}
 
 function resetStripState() {
+  editingLabelIndex.value = null
+  editingLabelDraft.value = ''
   stripSegments.value = []
   labelsEnabled.value = sessionLabelDefault.value
 }
@@ -146,6 +196,10 @@ function undo() {
 
 function toggleStripLabels() {
   labelsEnabled.value = !labelsEnabled.value
+  if (!labelsEnabled.value) {
+    editingLabelIndex.value = null
+    editingLabelDraft.value = ''
+  }
   redrawCanvas()
   scheduleAutoSave()
 }
@@ -554,28 +608,116 @@ function drawAnnotations(ctx: CanvasRenderingContext2D) {
   }
 }
 
+function getLabelMetrics(
+  seg: { x: number, width: number, labelText: string },
+  i: number,
+  radius: number,
+  ctx: CanvasRenderingContext2D,
+): { text: string, fontSize: number, isPill: boolean, rect: { x: number, y: number, w: number, h: number } } {
+  const inset = radius * 0.75 + 6
+  const cy = inset + radius
+  const cx = seg.x + inset + radius
+  let text = displayedLabelText(seg, i)
+  let fontSize = Math.round(radius)
+  ctx.font = `bold ${fontSize}px sans-serif`
+  let textWidth = ctx.measureText(text).width
+
+  // Fits in a circle: text width <= diameter minus 4px slack.
+  if (textWidth <= 2 * radius - 4) {
+    return {
+      text,
+      fontSize,
+      isPill: false,
+      rect: { x: cx - radius, y: cy - radius, w: 2 * radius, h: 2 * radius },
+    }
+  }
+
+  // Pill path: shrink font down to LABEL_MIN_FONT, then ellipsize once.
+  // Pill is sized to fit the text, capped only by the segment width so it never overflows the image.
+  const pillPadding = radius * LABEL_PILL_PADDING_RATIO
+  const maxPillWidth = seg.width - inset * 2
+  let pillWidth = textWidth + 2 * pillPadding
+
+  if (pillWidth > maxPillWidth) {
+    while (fontSize > LABEL_MIN_FONT && pillWidth > maxPillWidth) {
+      fontSize -= 1
+      ctx.font = `bold ${fontSize}px sans-serif`
+      textWidth = ctx.measureText(text).width
+      pillWidth = textWidth + 2 * pillPadding
+    }
+    if (pillWidth > maxPillWidth) {
+      const maxChars = Math.max(3, Math.floor((maxPillWidth / fontSize) * 1.5))
+      const truncated = text.length > maxChars ? text.slice(0, Math.max(1, maxChars - 1)) + '…' : text
+      text = truncated
+      ctx.font = `bold ${fontSize}px sans-serif`
+      textWidth = ctx.measureText(text).width
+      pillWidth = Math.min(textWidth + 2 * pillPadding, maxPillWidth)
+    }
+  }
+
+  return {
+    text,
+    fontSize,
+    isPill: true,
+    rect: { x: seg.x + inset, y: cy - radius, w: pillWidth, h: 2 * radius },
+  }
+}
+
+function hitTestLabel(canvasX: number, canvasY: number, ctx: CanvasRenderingContext2D): number | null {
+  if (!labelsEnabled.value) return null
+  if (editingLabelIndex.value !== null) return null
+  const canvas = getCanvas()
+  if (!canvas) return null
+  const radius = Math.min(28, Math.max(14, canvas.height * 0.03))
+  for (let i = stripSegments.value.length - 1; i >= 0; i--) {
+    const m = getLabelMetrics(stripSegments.value[i]!, i, radius, ctx)
+    if (
+      canvasX >= m.rect.x && canvasX <= m.rect.x + m.rect.w &&
+      canvasY >= m.rect.y && canvasY <= m.rect.y + m.rect.h
+    ) return i
+  }
+  return null
+}
+
 function drawStripLabels(ctx: CanvasRenderingContext2D) {
   const canvas = getCanvas()
   if (!canvas || stripSegments.value.length < 2 || !labelsEnabled.value) return
   const radius = Math.min(28, Math.max(14, canvas.height * 0.03))
-  const inset = radius * 0.75 + 6
   ctx.save()
   for (let i = 0; i < stripSegments.value.length; i++) {
     const seg = stripSegments.value[i]!
-    const cx = seg.x + inset + radius
-    const cy = inset + radius
+    const m = getLabelMetrics(seg, i, radius, ctx)
     ctx.beginPath()
-    ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+    if (m.isPill) {
+      ctx.roundRect(m.rect.x, m.rect.y, m.rect.w, m.rect.h, radius)
+    } else {
+      const cx = m.rect.x + radius
+      const cy = m.rect.y + radius
+      ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+    }
     ctx.fillStyle = '#ffffff'
     ctx.fill()
     ctx.lineWidth = 2
     ctx.strokeStyle = '#18181b'
     ctx.stroke()
     ctx.fillStyle = '#18181b'
-    ctx.font = `bold ${Math.round(radius)}px sans-serif`
+    ctx.font = `bold ${m.fontSize}px sans-serif`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
-    ctx.fillText(String(i + 1), cx, cy)
+    const cx = m.rect.x + m.rect.w / 2
+    const cy = m.rect.y + m.rect.h / 2
+    ctx.fillText(m.text, cx, cy)
+    if (editingLabelIndex.value === i) {
+      ctx.beginPath()
+      if (m.isPill) {
+        ctx.roundRect(m.rect.x, m.rect.y, m.rect.w, m.rect.h, radius)
+      } else {
+        ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+      }
+      ctx.strokeStyle = LABEL_FOCUS_RING_COLOR
+      ctx.lineWidth = 2
+      ctx.stroke()
+    }
   }
   ctx.restore()
 }
@@ -731,6 +873,7 @@ function resetDrawingState() {
   resizeStartPos.value = null
   resizeStartValue.value = null
   hoveredAnnotationIndex.value = null
+  hoveredLabelIndex.value = null
   textInputVisible.value = false
   textInputCanvasPos.value = null
   textInputValue.value = ''
@@ -829,9 +972,9 @@ async function appendImageToRight(file: File) {
     canvas.height = newHeight
     baseImage.value = { objectUrl: null, image: compositeImg }
     if (stripSegments.value.length === 0) {
-      stripSegments.value = [{ x: 0, width: oldWidth }]
+      stripSegments.value = [{ x: 0, width: oldWidth, labelText: '' }]
     }
-    stripSegments.value = [...stripSegments.value, { x: oldWidth + STRIP_GAP, width: img.naturalWidth }]
+    stripSegments.value = [...stripSegments.value, { x: oldWidth + STRIP_GAP, width: img.naturalWidth, labelText: '' }]
     labelsEnabled.value = sessionLabelDefault.value
     resetZoom()
     redrawCanvas()
@@ -926,6 +1069,20 @@ function startDrawing(e: MouseEvent | TouchEvent) {
   }
 
   const { x, y } = getCanvasCoords(e)
+  const ctx = getCanvasContext()
+  if (ctx) {
+    const labelIdx = hitTestLabel(x, y, ctx)
+    if (labelIdx !== null) {
+      if (editingLabelIndex.value !== null && editingLabelIndex.value !== labelIdx) {
+        commitLabelEdit()
+      }
+      editingLabelIndex.value = labelIdx
+      editingLabelDraft.value = displayedLabelText(stripSegments.value[labelIdx]!, labelIdx)
+      redrawCanvas()
+      e.stopPropagation()
+      return
+    }
+  }
 
   if (toolMode.value === 'move') {
     const idx = getHoveredAnnotationForMoveMode(x, y)
@@ -1042,6 +1199,19 @@ function draw(e: MouseEvent | TouchEvent) {
     if (newHover !== hoveredAnnotationIndex.value) {
       hoveredAnnotationIndex.value = newHover
       redrawCanvas()
+    }
+  }
+
+  // Label hover: tracked on every mousemove so the cursor reflects hover state
+  // outside of move mode too. hitTestLabel early-returns when labels are off
+  // or an edit is open, so this is a cheap no-op in those cases.
+  if (!isPanning.value) {
+    const ctx = getCanvasContext()
+    if (ctx) {
+      const newLabelHover = hitTestLabel(x, y, ctx)
+      if (newLabelHover !== hoveredLabelIndex.value) {
+        hoveredLabelIndex.value = newLabelHover
+      }
     }
   }
 }
@@ -1169,6 +1339,41 @@ const textInputStyle = computed(() => {
     fontSize: `${textFontSize.value}px`,
     color: strokeColor.value
   }
+})
+
+const labelEditorStyle = computed(() => {
+  const canvas = getCanvas()
+  const wrapper = canvasWrapperRef.value
+  if (!canvas || !wrapper) return {}
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return {}
+  const i = editingLabelIndex.value
+  if (i == null) return {}
+  const seg = stripSegments.value[i]
+  if (!seg) return {}
+  const radius = Math.min(28, Math.max(14, canvas.height * 0.03))
+  // Size the editor overlay to the current draft so the input grows as the user types,
+  // matching the pill rect that will be rendered on commit.
+  const draftSeg = { ...seg, labelText: editingLabelDraft.value }
+  const m = getLabelMetrics(draftSeg, i, radius, ctx)
+  const canvasRect = canvas.getBoundingClientRect()
+  const wrapperRect = wrapper.getBoundingClientRect()
+  const scaleX = canvasRect.width / canvas.width
+  const scaleY = canvasRect.height / canvas.height
+  return {
+    left: `${canvasRect.left - wrapperRect.left + m.rect.x * scaleX}px`,
+    top: `${canvasRect.top - wrapperRect.top + m.rect.y * scaleY}px`,
+    width: `${m.rect.w * scaleX}px`,
+    height: `${m.rect.h * scaleY}px`,
+    fontSize: `${m.fontSize * scaleY}px`,
+  }
+})
+
+watch(editingLabelIndex, async (idx) => {
+  if (idx == null) return
+  await nextTick()
+  labelEditorInputRef.value?.focus()
+  labelEditorInputRef.value?.select()
 })
 
 function commitText() {
@@ -1560,7 +1765,7 @@ async function performSave(opts: { silent?: boolean } = {}): Promise<boolean> {
       layers,
       annotations: JSON.parse(JSON.stringify(annotations.value)),
       strip: stripSegments.value.length > 1
-        ? { segments: stripSegments.value.map(s => ({ ...s })), labelsEnabled: labelsEnabled.value }
+        ? { segments: stripSegments.value.map(s => ({ x: s.x, width: s.width, labelText: s.labelText })), labelsEnabled: labelsEnabled.value }
         : undefined,
       settings: buildSavedSettings(),
       thumbDataUrl: makeThumbnailFromCanvas(canvas),
@@ -1657,7 +1862,7 @@ async function loadSavedProjectIntoCanvas(id: string) {
     emojiSize.value = saved.settings.emojiSize
 
     if (saved.strip && saved.strip.segments.length > 1) {
-      stripSegments.value = saved.strip.segments.map(s => ({ ...s }))
+      stripSegments.value = saved.strip.segments.map(s => ({ x: s.x, width: s.width, labelText: s.labelText ?? '' }))
       labelsEnabled.value = saved.strip.labelsEnabled
     }
 
@@ -1749,6 +1954,7 @@ function triggerFileInput() {
 
 function onCanvasMouseLeave() {
   hoveredAnnotationIndex.value = null
+  hoveredLabelIndex.value = null
   if (toolMode.value === 'move' && !moveDragging.value && !resizeDragging.value) redrawCanvas()
 }
 
@@ -1776,6 +1982,7 @@ function setToolMode(mode: typeof toolMode.value) {
   resizeStartPos.value = null
   resizeStartValue.value = null
   hoveredAnnotationIndex.value = null
+  hoveredLabelIndex.value = null
 
   if (textInputVisible.value && mode !== 'text') {
     textInputVisible.value = false
@@ -2082,6 +2289,7 @@ function slamHandStyle() {
 const canvasCursorClass = computed(() => {
   if (isPanning.value) return 'cursor-grabbing'
   if (spacePanActive.value) return 'cursor-grab'
+  if (hoveredLabelIndex.value !== null) return 'cursor-text'
   const cursors: Record<typeof toolMode.value, string> = {
     pen: 'cursor-crosshair',
     arrow: 'cursor-crosshair',
@@ -2260,6 +2468,32 @@ onUnmounted(() => {
   if (autoSaveTimer) clearTimeout(autoSaveTimer)
   canvasResizeObserver?.disconnect()
   clearImageResources()
+})
+
+watch(showHelp, async (isOpen) => {
+  if (isOpen) {
+    previouslyFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    document.body.style.overflow = 'hidden'
+    const onKeydown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') showHelp.value = false
+    }
+    window.addEventListener('keydown', onKeydown)
+    helpKeydownCleanup = () => window.removeEventListener('keydown', onKeydown)
+    await nextTick()
+    helpCardRef.value?.focus()
+  } else {
+    document.body.style.overflow = ''
+    if (helpKeydownCleanup) {
+      helpKeydownCleanup()
+      helpKeydownCleanup = null
+    }
+    if (previouslyFocusedElement && previouslyFocusedElement.isConnected) {
+      previouslyFocusedElement.focus()
+    } else if (helpButtonRef.value) {
+      helpButtonRef.value.focus()
+    }
+    previouslyFocusedElement = null
+  }
 })
 </script>
 
@@ -2596,6 +2830,17 @@ onUnmounted(() => {
             <span class="text-xs tabular-nums w-8" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">{{ selectedArrowAngleDeg }}°</span>
           </div>
         </template>
+
+        <!-- Help button (desktop, row 2 right-aligned) -->
+        <button
+          ref="helpButtonRef"
+          type="button"
+          class="hidden xl:flex items-center justify-center w-8 h-8 rounded-lg text-base font-semibold transition-colors ml-auto"
+          :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100']"
+          title="Help"
+          aria-label="Open help"
+          @click="showHelp = true"
+        >?</button>
         </div>
 
         <!-- Compact actions + overflow menu (mobile / tablet) -->
@@ -2896,6 +3141,22 @@ onUnmounted(() => {
           @keydown="onTextInputKeydown"
         />
 
+        <!-- Strip label editor overlay -->
+        <input
+          v-show="editingLabelIndex !== null"
+          ref="labelEditorInputRef"
+          v-model="editingLabelDraft"
+          type="text"
+          maxlength="64"
+          class="absolute z-20 px-2 border-2 border-indigo-500 rounded shadow-xl outline-none text-center"
+          :class="[isDark ? 'bg-zinc-900/95 text-white' : 'bg-white/95 text-slate-900']"
+          :style="labelEditorStyle"
+          @keydown.enter.prevent="commitLabelEdit"
+          @keydown.escape.prevent="cancelLabelEdit"
+          @keydown.tab.prevent="onLabelEditorTab"
+          @blur="commitLabelEdit"
+        />
+
         <!-- Contextual hints -->
         <div
           v-if="hasImage && toolMode === 'emoji' && pendingEmoji"
@@ -3102,6 +3363,44 @@ onUnmounted(() => {
             >
               Cancel
             </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="showHelp"
+        class="fixed inset-0 z-50 flex items-center justify-center p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="help-title"
+      >
+        <div class="absolute inset-0 bg-black/50" @click="showHelp = false" />
+        <div
+          ref="helpCardRef"
+          tabindex="-1"
+          class="relative w-full max-w-2xl rounded-xl border shadow-2xl outline-none"
+          :class="[isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-slate-200']"
+        >
+          <div class="flex items-center justify-between p-5 pb-3">
+            <h2
+              id="help-title"
+              class="text-lg font-semibold"
+              :class="[isDark ? 'text-zinc-100' : 'text-slate-900']"
+            >
+              How to use JoltShot
+            </h2>
+            <button
+              type="button"
+              class="w-8 h-8 rounded-md flex items-center justify-center text-lg"
+              :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100']"
+              aria-label="Close help"
+              @click="showHelp = false"
+            >×</button>
+          </div>
+          <div class="px-5 pb-5 max-h-[80vh] overflow-y-auto">
+            <HelpContent :is-dark="isDark" />
           </div>
         </div>
       </div>

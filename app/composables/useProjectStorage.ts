@@ -32,6 +32,7 @@ export type SavedBaseImage = {
 export type SavedStripSegment = {
   x: number
   width: number
+  labelText?: string
 }
 
 export type SavedStrip = {
