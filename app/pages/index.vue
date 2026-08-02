@@ -922,6 +922,7 @@ function resetDrawingState() {
 }
 
 async function replaceWithImage(fileOrUrl: File | string) {
+  invalidateAutoSave()
   clearImageResources()
   resetStripState()
   const objectUrl = typeof fileOrUrl !== 'string' ? URL.createObjectURL(fileOrUrl) : null
@@ -1105,6 +1106,7 @@ function clearAnnotations({ keepSaved = false, resetProject = true }: { keepSave
     refreshSavedList()
   }
   if (resetProject) {
+    invalidateAutoSave()
     projectId.value = newProjectId()
     projectCreatedAt.value = Date.now()
     projectName.value = 'Untitled'
@@ -1811,6 +1813,8 @@ function buildSavedSettings(): SavedSettings {
 async function performSave(opts: { silent?: boolean } = {}): Promise<boolean> {
   const canvas = getCanvas()
   if (!canvas || !hasImage.value) return false
+  const generationAtStart = autoSaveGeneration
+  const idAtStart = projectId.value
   saveStatus.value = 'saving'
   try {
     const baseImageData = await buildSavedBaseImage()
@@ -1820,8 +1824,9 @@ async function performSave(opts: { silent?: boolean } = {}): Promise<boolean> {
       return false
     }
     const layers = await buildSavedLayers()
+    if (generationAtStart !== autoSaveGeneration) return false
     const result = saveProject({
-      id: projectId.value,
+      id: idAtStart,
       name: projectName.value || 'Untitled',
       createdAt: projectCreatedAt.value,
       width: canvas.width,
@@ -1862,13 +1867,26 @@ async function performSave(opts: { silent?: boolean } = {}): Promise<boolean> {
 }
 
 let autoSaveTimer: ReturnType<typeof setTimeout> | null = null
+let autoSaveGeneration = 0
+
+function invalidateAutoSave() {
+  autoSaveGeneration++
+  if (autoSaveTimer) {
+    clearTimeout(autoSaveTimer)
+    autoSaveTimer = null
+  }
+  saveStatus.value = 'idle'
+}
 
 function scheduleAutoSave() {
   if (!hasImage.value) return
+  const generation = autoSaveGeneration
   if (autoSaveTimer) clearTimeout(autoSaveTimer)
   saveStatus.value = 'saving'
-  autoSaveTimer = setTimeout(() => {
-    performSave({ silent: true })
+  autoSaveTimer = setTimeout(async () => {
+    if (generation !== autoSaveGeneration) return
+    autoSaveTimer = null
+    await performSave({ silent: true })
   }, 1000)
 }
 
@@ -1879,6 +1897,7 @@ function refreshSavedList() {
 }
 
 async function loadSavedProjectIntoCanvas(id: string) {
+  invalidateAutoSave()
   const saved = getSavedProject(id)
   if (!saved) return
   clearImageResources()
@@ -1952,6 +1971,7 @@ async function loadSavedProjectIntoCanvas(id: string) {
 
 function handleDeleteSaved(id: string) {
   if (id === projectId.value) {
+    invalidateAutoSave()
     projectId.value = newProjectId()
     projectCreatedAt.value = Date.now()
     projectName.value = 'Untitled'
@@ -1967,6 +1987,7 @@ function handleRenameSaved(payload: { id: string, name: string }) {
 }
 
 function startNewProject() {
+  invalidateAutoSave()
   projectId.value = newProjectId()
   projectCreatedAt.value = Date.now()
   projectName.value = 'Untitled'
