@@ -296,53 +296,55 @@ onBeforeUnmount(() => {
       @pointerdown="onAlphaPointerDown"
     />
 
-    <div class="grid grid-cols-5 gap-1">
+    <div class="flex flex-col gap-1.5">
       <input
         :value="hexField"
         type="text"
         spellcheck="false"
-        class="col-span-1 min-w-0 px-1 py-1 rounded-md border text-[11px] font-mono text-center"
+        class="w-full px-2 py-1 rounded-md border text-[11px] font-mono text-center"
         :class="[isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-slate-300 text-slate-700']"
         title="Hex (#rrggbb or #rrggbbaa)"
         @input="onHexInput"
         @blur="onHexBlur"
       />
-      <input
-        v-model.number="rChannel"
-        type="number"
-        min="0"
-        max="255"
-        class="min-w-0 px-1 py-1 rounded-md border text-[11px] text-center"
-        :class="[isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-slate-300 text-slate-700']"
-        title="Red (0–255)"
-      />
-      <input
-        v-model.number="gChannel"
-        type="number"
-        min="0"
-        max="255"
-        class="min-w-0 px-1 py-1 rounded-md border text-[11px] text-center"
-        :class="[isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-slate-300 text-slate-700']"
-        title="Green (0–255)"
-      />
-      <input
-        v-model.number="bChannel"
-        type="number"
-        min="0"
-        max="255"
-        class="min-w-0 px-1 py-1 rounded-md border text-[11px] text-center"
-        :class="[isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-slate-300 text-slate-700']"
-        title="Blue (0–255)"
-      />
-      <input
-        v-model.number="aChannel"
-        type="number"
-        min="0"
-        max="100"
-        class="min-w-0 px-1 py-1 rounded-md border text-[11px] text-center"
-        :class="[isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-slate-300 text-slate-700']"
-        title="Alpha (0–100%)"
-      />
+      <div class="grid grid-cols-4 gap-1.5">
+        <input
+          v-model.number="rChannel"
+          type="number"
+          min="0"
+          max="255"
+          class="min-w-0 w-full px-1 py-1 rounded-md border text-[11px] text-center"
+          :class="[isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-slate-300 text-slate-700']"
+          title="Red (0–255)"
+        />
+        <input
+          v-model.number="gChannel"
+          type="number"
+          min="0"
+          max="255"
+          class="min-w-0 w-full px-1 py-1 rounded-md border text-[11px] text-center"
+          :class="[isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-slate-300 text-slate-700']"
+          title="Green (0–255)"
+        />
+        <input
+          v-model.number="bChannel"
+          type="number"
+          min="0"
+          max="255"
+          class="min-w-0 w-full px-1 py-1 rounded-md border text-[11px] text-center"
+          :class="[isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-slate-300 text-slate-700']"
+          title="Blue (0–255)"
+        />
+        <input
+          v-model.number="aChannel"
+          type="number"
+          min="0"
+          max="100"
+          class="min-w-0 w-full px-1 py-1 rounded-md border text-[11px] text-center"
+          :class="[isDark ? 'bg-zinc-800 border-zinc-700 text-zinc-200' : 'bg-white border-slate-300 text-slate-700']"
+          title="Alpha (0–100%)"
+        />
+      </div>
     </div>
 
     <div v-if="recents.length" class="flex flex-col gap-1.5">
