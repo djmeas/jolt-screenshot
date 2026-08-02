@@ -10,7 +10,7 @@ First-time users of JoltShot land on an empty canvas with a toolbar full of tool
 
 ## Goal
 
-- Add a small `?` button at the bottom-right of the desktop toolbar (after Copy to Clipboard). Clicking it opens a modal containing a short, friendly user guide.
+- Add a small `?` button at the right edge of the desktop toolbar's second row (the row containing Color and Stroke). Clicking it opens a modal containing a short, friendly user guide.
 - The guide covers, in plain English, the six most important things a new user needs to know: getting an image in, marking it up, stitching multiple screenshots with editable labels, saving projects, copying to clipboard, and a few quick tips.
 - Modal closes on backdrop click, `Escape`, the explicit `×` button, or focus-outside-click. Mobile is intentionally not in scope — the button only appears at the same `xl` breakpoint as the rest of the desktop toolbar.
 - One README bullet added to the "UI" section so the feature is discoverable from the repo docs.
@@ -66,7 +66,7 @@ Reset alongside other modals: `cancelPasteDialog`, `pendingClearSaved = false`, 
 
 ## Toolbar button (desktop, row 1)
 
-A new `?` button is added **after** the existing "Copy to Clipboard" button inside the existing `hidden xl:flex items-center gap-1 shrink-0` wrapper. Styling follows the existing toolbar buttons (same Tailwind class shape, same dark/light variants). No icon library dep — use a plain text `?` inside a small circular button.
+A new `?` button is added at the right edge of the **second row** of the desktop toolbar (the row that already contains Color, Stroke, and the conditional text-size / arrow-pivot controls). It is placed inside the existing row-2 flex container, after the conditional Pivot template, and uses `ml-auto` so it floats to the far right. Styling follows the existing toolbar buttons (same Tailwind class shape, same dark/light variants). No icon library dep — use a plain text `?` inside a small circular button.
 
 - Width/height: 32×32, `rounded-md`, with the `?` character at 16px font size, semibold.
 - Tooltip: `title="Help"`.
@@ -185,7 +185,7 @@ Six sections, each 1–3 short paragraphs. No bullet-heavy formatting in the mai
 - No new persisted state. `showHelp` resets on reload.
 - No new dependencies (no markdown library, no focus-trap library). Focus management is a single `ref` + one `nextTick` + the `Escape` keydown listener.
 - No changes to the existing modals, save flow, copy flow, or theme.
-- The `?` button is in the same toolbar wrapper as Undo / Clear / Copy / Labels toggle, so it shares their responsive `xl:` breakpoint visibility.
+- The `?` button lives in the row-2 flex container, so it shares the responsive `xl:` breakpoint visibility with the rest of the row-2 controls.
 
 ## Error handling
 
@@ -196,7 +196,7 @@ Six sections, each 1–3 short paragraphs. No bullet-heavy formatting in the mai
 
 No test framework exists in this project. Verification is a manual smoke-test checklist run against `pnpm dev`:
 
-1. Open the app at desktop width (≥ 1280px) — the `?` button appears at the bottom-right of the toolbar, after Copy to Clipboard.
+1. Open the app at desktop width (≥ 1280px) — the `?` button appears at the right edge of the second toolbar row (the Color / Stroke row), separated from the rest of that row by `ml-auto`.
 2. Click the `?` button — the modal opens with all six sections visible. The page behind is dimmed and cannot scroll.
 3. Click the dim backdrop — the modal closes.
 4. Open again, press `Escape` — the modal closes.

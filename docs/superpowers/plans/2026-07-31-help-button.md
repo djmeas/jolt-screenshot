@@ -16,7 +16,7 @@
 - `ref` / `computed` / `nextTick` are Nuxt auto-imports — no import statements needed in `index.vue`.
 - Styling follows the existing pattern: Tailwind classes with `:class="[isDark ? '...' : '...']"` ternaries.
 - All edits are in `app/components/HelpContent.vue` (new), `app/pages/index.vue`, and `README.md`.
-- The `?` button is desktop-only (`xl` breakpoint) and lives in the same `hidden xl:flex items-center gap-1 shrink-0` wrapper as Undo / Clear / Copy.
+- The `?` button is desktop-only (`xl` breakpoint) and lives at the right edge of the second toolbar row (the Color / Stroke row), using `ml-auto` to float to the far right after the conditional Pivot template.
 - Modal close paths are: backdrop click, `Escape` key, `×` button. Each sets `showHelp = false`.
 - Body scroll lock: `document.body.style.overflow = 'hidden'` while modal is open; restored on close.
 - Focus management: on open, capture the previously focused element and move focus to the modal card; on close, restore focus to the `?` button (or the captured element if `helpButtonRef` is not the originating element).
@@ -128,7 +128,7 @@ git commit -m "Add HelpContent component with in-app user guide"
 Add the `showHelp` ref, the `?` button in the toolbar, and the modal `<Teleport>`. This task includes the focus management and body scroll lock. After this task, clicking `?` opens the modal and the close paths all work.
 
 **Files:**
-- Modify: `app/pages/index.vue` — add `showHelp` ref, add `helpButtonRef`, add `?` button to the desktop toolbar after Copy to Clipboard, add the `<Teleport>` modal block
+- Modify: `app/pages/index.vue` — add `showHelp` ref, add `helpButtonRef`, add `?` button to the right edge of the desktop toolbar's row 2 (after the conditional Pivot template, using `ml-auto`), add the `<Teleport>` modal block
 
 **Interfaces:**
 - Consumes: `HelpContent` component (from Task 1), `isDark` (existing), existing `nextTick` auto-import.
@@ -152,23 +152,24 @@ let helpKeydownCleanup: (() => void) | null = null
 
 Place `helpButtonRef` next to the other toolbar refs. The `previouslyFocusedElement` and `helpKeydownCleanup` live at module scope as plain `let`s — they're not reactive state, just bookkeeping for the open/close lifecycle.
 
-- [ ] **Step 2: Add the `?` button to the desktop toolbar**
+- [ ] **Step 2: Add the `?` button to the right edge of row 2**
 
-In `app/pages/index.vue`, immediately after the "Copy to Clipboard" button (currently ending at line 2683 with the closing `</button>` of the Copy button), and before the `</div>` that closes the `hidden xl:flex items-center gap-1 shrink-0` wrapper (line 2684), insert:
+In `app/pages/index.vue`, the row-2 flex container starts around line 2729 (`<!-- Row 2: color, stroke, conditional text size, conditional arrow pivot -->`). The row contains Color, Stroke, and the conditional text-size / arrow-pivot templates. Insert the `?` button **after** the closing `</template>` of the Pivot block (which ends at the `</div>` that closes the row-2 container), but **inside** the row-2 container so it shares the `xl:` breakpoint visibility:
 
 ```html
-          <button
-            ref="helpButtonRef"
-            type="button"
-            class="flex items-center justify-center w-8 h-8 rounded-lg text-base font-semibold transition-colors"
-            :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100']"
-            title="Help"
-            aria-label="Open help"
-            @click="showHelp = true"
-          >?</button>
+        <!-- Help button (desktop, row 2 right-aligned) -->
+        <button
+          ref="helpButtonRef"
+          type="button"
+          class="hidden xl:flex items-center justify-center w-8 h-8 rounded-lg text-base font-semibold transition-colors ml-auto"
+          :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100']"
+          title="Help"
+          aria-label="Open help"
+          @click="showHelp = true"
+        >?</button>
 ```
 
-The button is 32×32 (`w-8 h-8`), with the `?` glyph at `text-base font-semibold` (16px semibold). `aria-label="Open help"` and `title="Help"` for screen readers and tooltip.
+The button is 32×32 (`w-8 h-8`), with the `?` glyph at `text-base font-semibold` (16px semibold). `aria-label="Open help"` and `title="Help"` for screen readers and tooltip. `ml-auto` floats it to the right edge of the row-2 flex container, separated from the conditional Pivot controls by any empty space. `hidden xl:flex` matches the row-2 visibility.
 
 - [ ] **Step 3: Add the modal `<Teleport>` block**
 
@@ -315,7 +316,7 @@ The `**Help**` bullet sits between dark/light mode and keyboard shortcuts. Keep 
 Start: `pnpm dev`
 Then verify each of the following by hand, exactly as listed in the spec at `docs/superpowers/specs/2026-07-31-help-button-design.md` under "Testing":
 
-1. Open the app at desktop width (≥ 1280px) — the `?` button appears at the bottom-right of the toolbar, after Copy to Clipboard.
+1. Open the app at desktop width (≥ 1280px) — the `?` button appears at the right edge of the second toolbar row (the Color / Stroke row), separated from the rest of that row by `ml-auto`.
 2. Click the `?` button — the modal opens with all six sections visible. The page behind is dimmed and cannot scroll.
 3. Click the dim backdrop — the modal closes.
 4. Open again, press `Escape` — the modal closes.
