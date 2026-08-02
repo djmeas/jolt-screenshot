@@ -547,22 +547,25 @@ function onNavigatorPan(imageX: number, imageY: number) {
   applyZoomTransform()
 }
 
-function getCanvasCoords(e: MouseEvent | TouchEvent) {
+function getCanvasCoords(e: MouseEvent | TouchEvent): { x: number, y: number } | null {
   const canvas = getCanvas()
   if (!canvas) return { x: 0, y: 0 }
+  const pt = 'touches' in e ? e.touches[0] : e
+  if (!pt) return null
   const rect = canvas.getBoundingClientRect()
   const scaleX = canvas.width / rect.width
   const scaleY = canvas.height / rect.height
-  if ('touches' in e) {
-    return {
-      x: (e.touches[0].clientX - rect.left) * scaleX,
-      y: (e.touches[0].clientY - rect.top) * scaleY
-    }
-  }
   return {
-    x: (e.clientX - rect.left) * scaleX,
-    y: (e.clientY - rect.top) * scaleY
+    x: (pt.clientX - rect.left) * scaleX,
+    y: (pt.clientY - rect.top) * scaleY,
   }
+}
+
+function primaryTouch(e: MouseEvent | TouchEvent): { clientX: number, clientY: number } | null {
+  if ('touches' in e) {
+    return e.touches[0] ?? null
+  }
+  return e
 }
 
 function drawArrowHead(ctx: CanvasRenderingContext2D, from: { x: number, y: number }, to: { x: number, y: number }, color: string, lineWidth: number) {
@@ -1090,13 +1093,16 @@ function startDrawing(e: MouseEvent | TouchEvent) {
   if (!hasImage.value) return
 
   if (spacePanActive.value) {
-    const pt = 'touches' in e ? e.touches[0] : e
-    panStart.value = { x: pt.clientX, y: pt.clientY, viewX: viewX.value, viewY: viewY.value }
+    const touch = primaryTouch(e)
+    if (!touch) return
+    panStart.value = { x: touch.clientX, y: touch.clientY, viewX: viewX.value, viewY: viewY.value }
     isPanning.value = true
     return
   }
 
-  const { x, y } = getCanvasCoords(e)
+  const coords = getCanvasCoords(e)
+  if (!coords) return
+  const { x, y } = coords
   const ctx = getCanvasContext()
   if (ctx) {
     const labelIdx = hitTestLabel(x, y, ctx)
@@ -1183,14 +1189,17 @@ function draw(e: MouseEvent | TouchEvent) {
   if (!hasImage.value) return
 
   if (isPanning.value && panStart.value) {
-    const pt = 'touches' in e ? e.touches[0] : e
-    viewX.value = panStart.value.viewX - (pt.clientX - panStart.value.x) / displayScale.value
-    viewY.value = panStart.value.viewY - (pt.clientY - panStart.value.y) / displayScale.value
+    const touch = primaryTouch(e)
+    if (!touch) return
+    viewX.value = panStart.value.viewX - (touch.clientX - panStart.value.x) / displayScale.value
+    viewY.value = panStart.value.viewY - (touch.clientY - panStart.value.y) / displayScale.value
     applyZoomTransform()
     return
   }
 
-  const { x, y } = getCanvasCoords(e)
+  const coords = getCanvasCoords(e)
+  if (!coords) return
+  const { x, y } = coords
 
   if (toolMode.value === 'pen' && isDrawing.value) {
     currentPath.value = [...currentPath.value, { x, y }]
@@ -1327,7 +1336,9 @@ function onCanvasClick(e: MouseEvent) {
   if (!hasImage.value) return
   if (spacePanActive.value) return
   if (toolMode.value === 'move') return
-  const { x, y } = getCanvasCoords(e)
+  const coords = getCanvasCoords(e)
+  if (!coords) return
+  const { x, y } = coords
 
   if (toolMode.value === 'emoji' && pendingEmoji.value) {
     pushAnnotationState()
