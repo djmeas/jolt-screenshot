@@ -2424,6 +2424,7 @@ const canvasCursorClass = computed(() => {
     emoji: 'cursor-cell',
     text: 'cursor-text',
     move: 'cursor-grab active:cursor-grabbing',
+    sequence: 'cursor-crosshair',
   }
   return cursors[toolMode.value]
 })
@@ -2519,9 +2520,10 @@ function handleKeydown(e: KeyboardEvent) {
   }
 
   if ((e.key === 'Delete' || e.key === 'Backspace') && toolMode.value === 'move') {
+    e.preventDefault()
+    if (moveDragging.value || resizeDragging.value) return
     const idx = hoveredAnnotationIndex.value
     if (idx !== null && idx < annotations.value.length) {
-      e.preventDefault()
       pushAnnotationState()
       annotations.value = annotations.value.filter((_, i) => i !== idx)
       hoveredAnnotationIndex.value = null
