@@ -2980,6 +2980,31 @@ watch(showHelp, async (isOpen) => {
           </div>
         </div>
 
+        <!-- Sequence label size (desktop) -->
+        <div class="hidden xl:block w-px h-5 mx-1.5 shrink-0" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
+        <div class="hidden xl:flex items-center gap-2 shrink-0">
+          <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Seq size</span>
+          <button
+            type="button"
+            class="px-2 py-1 rounded-md text-xs font-medium transition-colors"
+            :class="sequenceLabelSize === 'auto'
+              ? (isDark ? 'bg-zinc-700 text-zinc-100' : 'bg-slate-200 text-slate-800')
+              : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100')"
+            :disabled="!hasImage"
+            @click="sequenceLabelSize = 'auto'"
+          >Auto</button>
+          <input
+            type="range"
+            min="8"
+            max="64"
+            :value="sequenceLabelSize === 'auto' ? getEffectiveSequenceRadius() : sequenceLabelSize"
+            class="w-20 h-1.5 accent-indigo-500"
+            :disabled="!hasImage"
+            @input="sequenceLabelSize = Number(($event.target as HTMLInputElement).value)"
+          />
+          <span class="text-xs tabular-nums" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">{{ Math.round(getEffectiveSequenceRadius()) }}px</span>
+        </div>
+
         <!-- Text font size (desktop, text tool only) -->
         <template v-if="toolMode === 'text'">
           <div class="hidden xl:block w-px h-5 mx-1.5 shrink-0" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
