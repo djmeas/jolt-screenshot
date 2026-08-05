@@ -22,7 +22,7 @@ Additionally, there is **no way to delete an individual annotation** in the app 
 
 ## Non-Goals (Out of Scope)
 
-- Adjustable circle size in the UI — fixed default radius (≈28px canvas units, consistent with the strip-label ballpark). Slight responsiveness by canvas size is acceptable follow-the-existing-label-sizing only if trivial; otherwise fixed.
+- Adjustable circle size in the UI — fixed default radius (≈28px canvas units, consistent with the strip-label ballpark).
 - Styling options for the circles — always white circle with black number; the global `strokeColor` and `strokeWidth` do **not** affect them.
 - Reordering sequence labels independently of the placement order — numbering follows array order.
 - Numbering that "remembers" higher values after deletion (monotonic high-water counter) — deliberately rejected; numbers always re-derive contiguously.
@@ -57,7 +57,7 @@ Alternatives considered and rejected:
   `const toolMode = ref<'pen' | 'arrow' | 'box' | 'emoji' | 'text' | 'move' | 'sequence'>('pen')`
 - Add annotation type to the union (no new module/class):
   `type SequenceAnnotation = { type: 'sequence', x: number, y: number, radius: number }`
-- One constant for the default radius, e.g. `const SEQ_RADIUS = 28`.
+- One constant for the fixed default radius, e.g. `const SEQ_RADIUS = 28`.
 - No new refs required for the feature itself. The existing `pushAnnotationState`, `annotations`, `redrawCanvas`, and move-mode state all apply unchanged.
 - Add `'sequence'` to `TOOL_SHORTCUTS` (`'7': 'sequence'`) and register a toolbar button.
 
@@ -88,10 +88,10 @@ No drag threshold, no preview — it is a click-to-place tool like emoji. `start
 
 **Move (drag):** add a `sequence` branch to `getAnnotationAt` with a circle hit-test (`Math.hypot(x - ann.x, y - ann.y) <= ann.radius`) and a `sequence` branch in `translateAnnotation` (updates `x`/`y`). Both follow the existing emoji/text pattern. Hover highlight and cursor behavior come along automatically since the move-mode hit-test path is shared.
 
-**General delete via Delete/Backspace:** in `handleKeydown`, add a handler for `Delete` and `Backspace` (guarded against `isEditableTarget`) that removes the annotation currently under the pointer in Move mode — or, if a move-target/selection concept exists, the selected one. Because this is Move-mode scoped and pointer-position based (consistent with the current select-by-hover model), the flow is:
+**General delete via Delete/Backspace:** in `handleKeydown`, add a handler for `Delete` and `Backspace` (guarded against `isEditableTarget`, and only when `toolMode === 'move'`) that removes the annotation currently hovered under the pointer. This is the existing select-by-hover model (`hoveredAnnotationIndex`, set in the `draw` handler): the user points at an annotation in Move mode, sees it highlighted, and presses Delete/Backspace. The flow:
 
-1. Only when `toolMode === 'move'`.
-2. Determine target index via `getHoveredAnnotationForMoveMode` at the last known pointer position (tracked like `hoveredAnnotationIndex`).
+1. Only when `toolMode === 'move'` and `hoveredAnnotationIndex` is not null.
+2. Target index = `hoveredAnnotationIndex.value` (fall back to `getHoveredAnnotationForMoveMode` at the last known pointer position if needed).
 3. If found: `pushAnnotationState()`, `filter` it out of `annotations`, clear selection/hover state, `redrawCanvas()`.
 
 Renumbering is automatic: removing an array element shifts the indices of subsequent sequence annotations, so their derived numbers decrease by one.
