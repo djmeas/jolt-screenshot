@@ -64,4 +64,9 @@ describe('sequence label size', () => {
   it('resolveSequenceRadius passes through in-range numbers unchanged', () => {
     expect(resolveSequenceRadius(20, 500)).toBe(20)
   })
+
+  it('resolveSequenceRadius includes the clamp edges (8 and 64)', () => {
+    expect(resolveSequenceRadius(8, 500)).toBe(8)
+    expect(resolveSequenceRadius(64, 500)).toBe(64)
+  })
 })

@@ -2616,6 +2616,10 @@ watch([textFontSize, emojiSize, sequenceLabelSize], () => {
   scheduleAutoSave()
 })
 
+watch(sequenceLabelSize, () => {
+  redrawCanvas()
+})
+
 onUnmounted(() => {
   window.removeEventListener('paste', handlePaste)
   window.removeEventListener('keydown', handleKeydown)
