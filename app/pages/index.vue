@@ -48,7 +48,7 @@ const isPanning = ref(false)
 const panStart = ref<{ x: number, y: number, viewX: number, viewY: number } | null>(null)
 
 // Tool mode: pen | arrow | box | emoji | text | move
-const toolMode = ref<'pen' | 'arrow' | 'box' | 'emoji' | 'text' | 'move'>('pen')
+const toolMode = ref<'pen' | 'arrow' | 'box' | 'emoji' | 'text' | 'move' | 'sequence'>('pen')
 
 // Move tool: drag an existing annotation
 const moveDragging = ref(false)
@@ -167,13 +167,15 @@ function resetStripState() {
   labelsEnabled.value = sessionLabelDefault.value
 }
 
+const SEQ_RADIUS = 28
+type SequenceAnnotation = { type: 'sequence', x: number, y: number, radius: number }
 type PenStroke = { type: 'pen', path: { x: number, y: number }[], color: string, lineWidth: number }
 type ArrowAnnotation = { type: 'arrow', x1: number, y1: number, length: number, angle: number, color: string, lineWidth: number }
 type BoxAnnotation = { type: 'box', x: number, y: number, width: number, height: number, color: string, lineWidth: number }
 type EmojiAnnotation = { type: 'emoji', x: number, y: number, emoji: string, size: number }
 type TextAnnotation = { type: 'text', x: number, y: number, text: string, fontSize: number, color: string }
 type ImageAnnotation = { type: 'image', id: string, objectUrl: string | null, x: number, y: number, width: number, height: number }
-type Annotation = PenStroke | ArrowAnnotation | BoxAnnotation | EmojiAnnotation | TextAnnotation | ImageAnnotation
+type Annotation = PenStroke | ArrowAnnotation | BoxAnnotation | EmojiAnnotation | TextAnnotation | ImageAnnotation | SequenceAnnotation
 
 const annotations = ref<Annotation[]>([])
 const annotationHistory = ref<Annotation[][]>([])
@@ -607,7 +609,9 @@ function drawArrow(ctx: CanvasRenderingContext2D, a: ArrowAnnotation) {
 }
 
 function drawAnnotations(ctx: CanvasRenderingContext2D) {
-  for (const ann of annotations.value) {
+  const sequenceNumbers = assignSequenceNumbers(annotations.value)
+  for (let i = 0; i < annotations.value.length; i++) {
+    const ann = annotations.value[i]!
     if (ann.type === 'image') {
       const img = imageElementCache.get(ann.id)
       if (img) ctx.drawImage(img, ann.x, ann.y, ann.width, ann.height)
@@ -619,10 +623,24 @@ function drawAnnotations(ctx: CanvasRenderingContext2D) {
       ctx.lineJoin = 'round'
       ctx.beginPath()
       ctx.moveTo(ann.path[0].x, ann.path[0].y)
-      for (let i = 1; i < ann.path.length; i++) {
-        ctx.lineTo(ann.path[i].x, ann.path[i].y)
+      for (let j = 1; j < ann.path.length; j++) {
+        ctx.lineTo(ann.path[j]!.x, ann.path[j]!.y)
       }
       ctx.stroke()
+    } else if (ann.type === 'sequence') {
+      const number = sequenceNumbers.get(i) ?? 0
+      ctx.fillStyle = '#ffffff'
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.arc(ann.x, ann.y, ann.radius, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.stroke()
+      ctx.font = `bold ${Math.round(ann.radius)}px sans-serif`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillStyle = '#000000'
+      ctx.fillText(String(number), ann.x, ann.y)
     } else if (ann.type === 'arrow') {
       drawArrow(ctx, ann)
     } else if (ann.type === 'box') {
@@ -641,8 +659,8 @@ function drawAnnotations(ctx: CanvasRenderingContext2D) {
       ctx.fillStyle = ann.color
       const lines = ann.text.split('\n')
       const lineHeight = ann.fontSize * 1.2
-      for (let i = 0; i < lines.length; i++) {
-        ctx.fillText(lines[i], ann.x, ann.y + i * lineHeight)
+      for (let j = 0; j < lines.length; j++) {
+        ctx.fillText(lines[j]!, ann.x, ann.y + j * lineHeight)
       }
     }
   }
