@@ -1549,6 +1549,10 @@ function hitTestBox(box: BoxAnnotation, x: number, y: number): boolean {
     y >= box.y - margin && y <= box.y + box.height + margin
 }
 
+function hitTestSequence(seq: SequenceAnnotation, x: number, y: number): boolean {
+  return Math.hypot(x - seq.x, y - seq.y) <= seq.radius
+}
+
 const RESIZE_HANDLE_RADIUS = 24
 const RESIZE_HANDLE_DRAW_RADIUS = 12
 const MAX_UNDO_DEPTH = 100
@@ -1615,6 +1619,7 @@ function getAnnotationAt(canvasX: number, canvasY: number): number | null {
     if (ann.type === 'emoji' && hitTestEmoji(ann, canvasX, canvasY)) return i
     if (ann.type === 'text' && hitTestText(ann, canvasX, canvasY)) return i
     if (ann.type === 'pen' && hitTestPenStroke(ann, canvasX, canvasY)) return i
+    if (ann.type === 'sequence' && hitTestSequence(ann, canvasX, canvasY)) return i
   }
   return null
 }
@@ -1635,6 +1640,8 @@ function translateAnnotation(index: number, dx: number, dy: number) {
     next[index] = { ...ann, x: ann.x + dx, y: ann.y + dy }
   } else if (ann.type === 'pen') {
     next[index] = { ...ann, path: ann.path.map(p => ({ x: p.x + dx, y: p.y + dy })) }
+  } else if (ann.type === 'sequence') {
+    next[index] = { ...ann, x: ann.x + dx, y: ann.y + dy }
   }
   annotations.value = next
 }
