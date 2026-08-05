@@ -167,8 +167,12 @@ function resetStripState() {
   labelsEnabled.value = sessionLabelDefault.value
 }
 
-const SEQ_RADIUS = 28
-type SequenceAnnotation = { type: 'sequence', x: number, y: number, radius: number }
+const sequenceLabelSize = ref<number | 'auto'>('auto')
+type SequenceAnnotation = { type: 'sequence', x: number, y: number }
+
+function getEffectiveSequenceRadius(): number {
+  return resolveSequenceRadius(sequenceLabelSize.value, getCanvas()?.height ?? 0)
+}
 type PenStroke = { type: 'pen', path: { x: number, y: number }[], color: string, lineWidth: number }
 type ArrowAnnotation = { type: 'arrow', x1: number, y1: number, length: number, angle: number, color: string, lineWidth: number }
 type BoxAnnotation = { type: 'box', x: number, y: number, width: number, height: number, color: string, lineWidth: number }
@@ -629,14 +633,15 @@ function drawAnnotations(ctx: CanvasRenderingContext2D) {
       ctx.stroke()
     } else if (ann.type === 'sequence') {
       const number = sequenceNumbers.get(i) ?? 0
+      const radius = getEffectiveSequenceRadius()
       ctx.fillStyle = '#ffffff'
       ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)'
       ctx.lineWidth = 1
       ctx.beginPath()
-      ctx.arc(ann.x, ann.y, ann.radius, 0, Math.PI * 2)
+      ctx.arc(ann.x, ann.y, radius, 0, Math.PI * 2)
       ctx.fill()
       ctx.stroke()
-      ctx.font = `bold ${Math.round(ann.radius)}px sans-serif`
+      ctx.font = `bold ${Math.round(radius)}px sans-serif`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
       ctx.fillStyle = '#000000'
@@ -1402,7 +1407,6 @@ function onCanvasClick(e: MouseEvent) {
     annotations.value = [...annotations.value, {
       type: 'sequence',
       x, y,
-      radius: SEQ_RADIUS,
     }]
     redrawCanvas()
     return
@@ -1550,7 +1554,7 @@ function hitTestBox(box: BoxAnnotation, x: number, y: number): boolean {
 }
 
 function hitTestSequence(seq: SequenceAnnotation, x: number, y: number): boolean {
-  return Math.hypot(x - seq.x, y - seq.y) <= seq.radius
+  return Math.hypot(x - seq.x, y - seq.y) <= getEffectiveSequenceRadius()
 }
 
 const RESIZE_HANDLE_RADIUS = 24
