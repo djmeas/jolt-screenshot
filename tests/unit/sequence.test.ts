@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { assignSequenceNumbers } from '~/utils/sequence'
+import { assignSequenceNumbers, autoSequenceRadius, resolveSequenceRadius } from '~/utils/sequence'
 
 type AnyAnn = { type: string } & Record<string, unknown>
 
@@ -36,5 +36,32 @@ describe('assignSequenceNumbers', () => {
   it('ignores a leading non-sequence annotation before numbering', () => {
     const anns: AnyAnn[] = [{ type: 'pen', path: [] }, { type: 'box' }, seq()]
     expect(assignSequenceNumbers(anns).get(2)).toBe(1)
+  })
+})
+
+describe('sequence label size', () => {
+  it('autoSequenceRadius scales at 3% of the canvas height', () => {
+    expect(autoSequenceRadius(500)).toBe(15)
+  })
+
+  it('autoSequenceRadius clamps to the 14px floor on small images', () => {
+    expect(autoSequenceRadius(100)).toBe(14)
+  })
+
+  it('autoSequenceRadius caps at 28px on large images', () => {
+    expect(autoSequenceRadius(4000)).toBe(28)
+  })
+
+  it('resolveSequenceRadius with "auto" delegates to the auto formula', () => {
+    expect(resolveSequenceRadius('auto', 500)).toBe(15)
+  })
+
+  it('resolveSequenceRadius clamps explicit numbers to [8, 64]', () => {
+    expect(resolveSequenceRadius(5, 500)).toBe(8)
+    expect(resolveSequenceRadius(99, 500)).toBe(64)
+  })
+
+  it('resolveSequenceRadius passes through in-range numbers unchanged', () => {
+    expect(resolveSequenceRadius(20, 500)).toBe(20)
   })
 })
