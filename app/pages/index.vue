@@ -167,8 +167,12 @@ function resetStripState() {
   labelsEnabled.value = sessionLabelDefault.value
 }
 
-const SEQ_RADIUS = 28
-type SequenceAnnotation = { type: 'sequence', x: number, y: number, radius: number }
+const sequenceLabelSize = ref<number | 'auto'>('auto')
+type SequenceAnnotation = { type: 'sequence', x: number, y: number }
+
+function getEffectiveSequenceRadius(): number {
+  return resolveSequenceRadius(sequenceLabelSize.value, getCanvas()?.height ?? 0)
+}
 type PenStroke = { type: 'pen', path: { x: number, y: number }[], color: string, lineWidth: number }
 type ArrowAnnotation = { type: 'arrow', x1: number, y1: number, length: number, angle: number, color: string, lineWidth: number }
 type BoxAnnotation = { type: 'box', x: number, y: number, width: number, height: number, color: string, lineWidth: number }
@@ -629,14 +633,15 @@ function drawAnnotations(ctx: CanvasRenderingContext2D) {
       ctx.stroke()
     } else if (ann.type === 'sequence') {
       const number = sequenceNumbers.get(i) ?? 0
+      const radius = getEffectiveSequenceRadius()
       ctx.fillStyle = '#ffffff'
       ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)'
       ctx.lineWidth = 1
       ctx.beginPath()
-      ctx.arc(ann.x, ann.y, ann.radius, 0, Math.PI * 2)
+      ctx.arc(ann.x, ann.y, radius, 0, Math.PI * 2)
       ctx.fill()
       ctx.stroke()
-      ctx.font = `bold ${Math.round(ann.radius)}px sans-serif`
+      ctx.font = `bold ${Math.round(radius)}px sans-serif`
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
       ctx.fillStyle = '#000000'
@@ -1402,7 +1407,6 @@ function onCanvasClick(e: MouseEvent) {
     annotations.value = [...annotations.value, {
       type: 'sequence',
       x, y,
-      radius: SEQ_RADIUS,
     }]
     redrawCanvas()
     return
@@ -1550,7 +1554,7 @@ function hitTestBox(box: BoxAnnotation, x: number, y: number): boolean {
 }
 
 function hitTestSequence(seq: SequenceAnnotation, x: number, y: number): boolean {
-  return Math.hypot(x - seq.x, y - seq.y) <= seq.radius
+  return Math.hypot(x - seq.x, y - seq.y) <= getEffectiveSequenceRadius()
 }
 
 const RESIZE_HANDLE_RADIUS = 24
@@ -1843,6 +1847,7 @@ function buildSavedSettings(): SavedSettings {
     strokeWidth: strokeWidth.value,
     textFontSize: textFontSize.value,
     emojiSize: emojiSize.value,
+    sequenceLabelSize: sequenceLabelSize.value,
   }
 }
 
@@ -1980,6 +1985,7 @@ async function loadSavedProjectIntoCanvas(id: string) {
     strokeWidth.value = saved.settings.strokeWidth
     textFontSize.value = saved.settings.textFontSize
     emojiSize.value = saved.settings.emojiSize
+    sequenceLabelSize.value = saved.settings.sequenceLabelSize ?? 'auto'
 
     if (saved.strip && saved.strip.segments.length > 1) {
       stripSegments.value = saved.strip.segments.map(s => ({ x: s.x, width: s.width, labelText: s.labelText ?? '' }))
@@ -2470,8 +2476,8 @@ const TOOL_SHORTCUTS: Record<string, typeof toolMode.value> = {
   '3': 'box',
   '4': 'emoji',
   '5': 'text',
-  '6': 'move',
-  '7': 'sequence',
+  '6': 'sequence',
+  '7': 'move',
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -2606,8 +2612,12 @@ watch(showSavesPanel, (open) => {
   if (open) nextTick(refreshSavedList)
 })
 
-watch([textFontSize, emojiSize], () => {
+watch([textFontSize, emojiSize, sequenceLabelSize], () => {
   scheduleAutoSave()
+})
+
+watch(sequenceLabelSize, () => {
+  redrawCanvas()
 })
 
 onUnmounted(() => {
@@ -2811,7 +2821,7 @@ watch(showHelp, async (isOpen) => {
             :class="[toolMode === 'sequence' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
             class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
             :disabled="!hasImage"
-            title="Sequence (7)"
+            title="Sequence (6)"
             @click="setToolMode('sequence')"
           >
             <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'sequence' }" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" /><text x="12" y="15.5" text-anchor="middle" font-size="10" font-weight="bold" fill="currentColor">1</text></svg>
@@ -2823,7 +2833,7 @@ watch(showHelp, async (isOpen) => {
             :class="[toolMode === 'move' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
             class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
             :disabled="!hasImage"
-            title="Move (6)"
+            title="Move (7)"
             @click="setToolMode('move')"
           >
             <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'move' }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
@@ -2973,6 +2983,33 @@ watch(showHelp, async (isOpen) => {
             </button>
           </div>
         </div>
+
+        <!-- Sequence label size (desktop, sequence tool only) -->
+        <template v-if="toolMode === 'sequence'">
+          <div class="hidden xl:block w-px h-5 mx-1.5 shrink-0" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
+          <div class="hidden xl:flex items-center gap-2 shrink-0">
+            <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Sequence Label Size</span>
+          <button
+            type="button"
+            class="px-2 py-1 rounded-md text-xs font-medium transition-colors"
+            :class="sequenceLabelSize === 'auto'
+              ? (isDark ? 'bg-zinc-700 text-zinc-100' : 'bg-slate-200 text-slate-800')
+              : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100')"
+            :disabled="!hasImage"
+            @click="sequenceLabelSize = 'auto'"
+          >Auto</button>
+          <input
+            type="range"
+            min="8"
+            max="64"
+            :value="sequenceLabelSize === 'auto' ? getEffectiveSequenceRadius() : sequenceLabelSize"
+            class="w-20 h-1.5 accent-indigo-500"
+            :disabled="!hasImage"
+            @input="sequenceLabelSize = Number(($event.target as HTMLInputElement).value)"
+          />
+          <span class="text-xs tabular-nums" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">{{ Math.round(getEffectiveSequenceRadius()) }}px</span>
+          </div>
+        </template>
 
         <!-- Text font size (desktop, text tool only) -->
         <template v-if="toolMode === 'text'">
@@ -3163,6 +3200,31 @@ watch(showHelp, async (isOpen) => {
                   :style="{ width: `${Math.min(size * 2.5, 14)}px`, height: `${Math.min(size * 2.5, 14)}px` }"
                 />
               </button>
+            </div>
+          </div>
+
+          <div v-if="toolMode === 'sequence'">
+            <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Sequence Label Size</span>
+            <div class="flex items-center gap-2 mt-2">
+              <button
+                type="button"
+                class="px-2 py-1 rounded-md text-xs font-medium transition-colors"
+                :class="sequenceLabelSize === 'auto'
+                  ? (isDark ? 'bg-zinc-700 text-zinc-100' : 'bg-slate-200 text-slate-800')
+                  : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100')"
+                :disabled="!hasImage"
+                @click="sequenceLabelSize = 'auto'"
+              >Auto</button>
+              <input
+                type="range"
+                min="8"
+                max="64"
+                :value="sequenceLabelSize === 'auto' ? getEffectiveSequenceRadius() : sequenceLabelSize"
+                class="flex-1 h-1.5 accent-indigo-500"
+                :disabled="!hasImage"
+                @input="sequenceLabelSize = Number(($event.target as HTMLInputElement).value)"
+              />
+              <span class="text-xs tabular-nums w-10 text-right" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">{{ Math.round(getEffectiveSequenceRadius()) }}px</span>
             </div>
           </div>
 
