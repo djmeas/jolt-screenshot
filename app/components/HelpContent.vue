@@ -24,7 +24,7 @@ defineProps<{
       Mark it up
     </h3>
     <p :class="[isDark ? 'text-zinc-300' : 'text-zinc-700']" class="text-sm leading-relaxed">
-      Pick a tool from the toolbar and draw on the image. <span class="font-semibold">Pen</span> is for freehand squiggles. <span class="font-semibold">Arrow</span> is for pointing at something specific. <span class="font-semibold">Box</span> draws a rectangle to highlight a region. <span class="font-semibold">Emoji</span> drops a reaction from a built-in picker. <span class="font-semibold">Text</span> adds a label you can type directly on the canvas.
+      Pick a tool from the toolbar and draw on the image. <span class="font-semibold">Pen</span> is for freehand squiggles. <span class="font-semibold">Arrow</span> is for pointing at something specific. <span class="font-semibold">Box</span> draws a rectangle to highlight a region. <span class="font-semibold">Emoji</span> drops a reaction from a built-in picker. <span class="font-semibold">Text</span> adds a label you can type directly on the canvas. <span class="font-semibold">Sequence</span> adds numbered step markers (1, 2, 3…) that renumber themselves when you delete one.
     </p>
     <p :class="[isDark ? 'text-zinc-300' : 'text-zinc-700']" class="text-sm leading-relaxed mt-3">
       To move an annotation or change its size, switch to the <span class="font-semibold">Move</span> tool, click the annotation, and drag. The handles around the edges let you resize.

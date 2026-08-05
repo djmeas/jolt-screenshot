@@ -48,7 +48,7 @@ const isPanning = ref(false)
 const panStart = ref<{ x: number, y: number, viewX: number, viewY: number } | null>(null)
 
 // Tool mode: pen | arrow | box | emoji | text | move
-const toolMode = ref<'pen' | 'arrow' | 'box' | 'emoji' | 'text' | 'move'>('pen')
+const toolMode = ref<'pen' | 'arrow' | 'box' | 'emoji' | 'text' | 'move' | 'sequence'>('pen')
 
 // Move tool: drag an existing annotation
 const moveDragging = ref(false)
@@ -167,13 +167,15 @@ function resetStripState() {
   labelsEnabled.value = sessionLabelDefault.value
 }
 
+const SEQ_RADIUS = 28
+type SequenceAnnotation = { type: 'sequence', x: number, y: number, radius: number }
 type PenStroke = { type: 'pen', path: { x: number, y: number }[], color: string, lineWidth: number }
 type ArrowAnnotation = { type: 'arrow', x1: number, y1: number, length: number, angle: number, color: string, lineWidth: number }
 type BoxAnnotation = { type: 'box', x: number, y: number, width: number, height: number, color: string, lineWidth: number }
 type EmojiAnnotation = { type: 'emoji', x: number, y: number, emoji: string, size: number }
 type TextAnnotation = { type: 'text', x: number, y: number, text: string, fontSize: number, color: string }
 type ImageAnnotation = { type: 'image', id: string, objectUrl: string | null, x: number, y: number, width: number, height: number }
-type Annotation = PenStroke | ArrowAnnotation | BoxAnnotation | EmojiAnnotation | TextAnnotation | ImageAnnotation
+type Annotation = PenStroke | ArrowAnnotation | BoxAnnotation | EmojiAnnotation | TextAnnotation | ImageAnnotation | SequenceAnnotation
 
 const annotations = ref<Annotation[]>([])
 const annotationHistory = ref<Annotation[][]>([])
@@ -607,7 +609,9 @@ function drawArrow(ctx: CanvasRenderingContext2D, a: ArrowAnnotation) {
 }
 
 function drawAnnotations(ctx: CanvasRenderingContext2D) {
-  for (const ann of annotations.value) {
+  const sequenceNumbers = assignSequenceNumbers(annotations.value)
+  for (let i = 0; i < annotations.value.length; i++) {
+    const ann = annotations.value[i]!
     if (ann.type === 'image') {
       const img = imageElementCache.get(ann.id)
       if (img) ctx.drawImage(img, ann.x, ann.y, ann.width, ann.height)
@@ -619,10 +623,24 @@ function drawAnnotations(ctx: CanvasRenderingContext2D) {
       ctx.lineJoin = 'round'
       ctx.beginPath()
       ctx.moveTo(ann.path[0].x, ann.path[0].y)
-      for (let i = 1; i < ann.path.length; i++) {
-        ctx.lineTo(ann.path[i].x, ann.path[i].y)
+      for (let j = 1; j < ann.path.length; j++) {
+        ctx.lineTo(ann.path[j]!.x, ann.path[j]!.y)
       }
       ctx.stroke()
+    } else if (ann.type === 'sequence') {
+      const number = sequenceNumbers.get(i) ?? 0
+      ctx.fillStyle = '#ffffff'
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.35)'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.arc(ann.x, ann.y, ann.radius, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.stroke()
+      ctx.font = `bold ${Math.round(ann.radius)}px sans-serif`
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillStyle = '#000000'
+      ctx.fillText(String(number), ann.x, ann.y)
     } else if (ann.type === 'arrow') {
       drawArrow(ctx, ann)
     } else if (ann.type === 'box') {
@@ -641,8 +659,8 @@ function drawAnnotations(ctx: CanvasRenderingContext2D) {
       ctx.fillStyle = ann.color
       const lines = ann.text.split('\n')
       const lineHeight = ann.fontSize * 1.2
-      for (let i = 0; i < lines.length; i++) {
-        ctx.fillText(lines[i], ann.x, ann.y + i * lineHeight)
+      for (let j = 0; j < lines.length; j++) {
+        ctx.fillText(lines[j]!, ann.x, ann.y + j * lineHeight)
       }
     }
   }
@@ -1379,6 +1397,17 @@ function onCanvasClick(e: MouseEvent) {
     return
   }
 
+  if (toolMode.value === 'sequence') {
+    pushAnnotationState()
+    annotations.value = [...annotations.value, {
+      type: 'sequence',
+      x, y,
+      radius: SEQ_RADIUS,
+    }]
+    redrawCanvas()
+    return
+  }
+
   if (toolMode.value === 'text') {
     textInputCanvasPos.value = { x, y }
     textInputValue.value = ''
@@ -1520,6 +1549,10 @@ function hitTestBox(box: BoxAnnotation, x: number, y: number): boolean {
     y >= box.y - margin && y <= box.y + box.height + margin
 }
 
+function hitTestSequence(seq: SequenceAnnotation, x: number, y: number): boolean {
+  return Math.hypot(x - seq.x, y - seq.y) <= seq.radius
+}
+
 const RESIZE_HANDLE_RADIUS = 24
 const RESIZE_HANDLE_DRAW_RADIUS = 12
 const MAX_UNDO_DEPTH = 100
@@ -1586,6 +1619,7 @@ function getAnnotationAt(canvasX: number, canvasY: number): number | null {
     if (ann.type === 'emoji' && hitTestEmoji(ann, canvasX, canvasY)) return i
     if (ann.type === 'text' && hitTestText(ann, canvasX, canvasY)) return i
     if (ann.type === 'pen' && hitTestPenStroke(ann, canvasX, canvasY)) return i
+    if (ann.type === 'sequence' && hitTestSequence(ann, canvasX, canvasY)) return i
   }
   return null
 }
@@ -1606,6 +1640,8 @@ function translateAnnotation(index: number, dx: number, dy: number) {
     next[index] = { ...ann, x: ann.x + dx, y: ann.y + dy }
   } else if (ann.type === 'pen') {
     next[index] = { ...ann, path: ann.path.map(p => ({ x: p.x + dx, y: p.y + dy })) }
+  } else if (ann.type === 'sequence') {
+    next[index] = { ...ann, x: ann.x + dx, y: ann.y + dy }
   }
   annotations.value = next
 }
@@ -2388,6 +2424,7 @@ const canvasCursorClass = computed(() => {
     emoji: 'cursor-cell',
     text: 'cursor-text',
     move: 'cursor-grab active:cursor-grabbing',
+    sequence: 'cursor-crosshair',
   }
   return cursors[toolMode.value]
 })
@@ -2434,6 +2471,7 @@ const TOOL_SHORTCUTS: Record<string, typeof toolMode.value> = {
   '4': 'emoji',
   '5': 'text',
   '6': 'move',
+  '7': 'sequence',
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -2479,6 +2517,20 @@ function handleKeydown(e: KeyboardEvent) {
     }
     closeToolbarMenu()
     return
+  }
+
+  if ((e.key === 'Delete' || e.key === 'Backspace') && toolMode.value === 'move') {
+    e.preventDefault()
+    if (moveDragging.value || resizeDragging.value) return
+    const idx = hoveredAnnotationIndex.value
+    if (idx !== null && idx < annotations.value.length) {
+      pushAnnotationState()
+      annotations.value = annotations.value.filter((_, i) => i !== idx)
+      hoveredAnnotationIndex.value = null
+      selectedArrowIndex.value = null
+      redrawCanvas()
+      return
+    }
   }
 
   if (e.metaKey || e.ctrlKey || e.altKey) return
@@ -2752,6 +2804,18 @@ watch(showHelp, async (isOpen) => {
           >
             <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'text' }" fill="currentColor" viewBox="0 0 24 24"><path d="M3 7V5h18v2h-7v14h-4V7H3z" /></svg>
             <span class="hidden sm:inline">Text</span>
+          </button>
+          <button
+            type="button"
+            :ref="(el) => registerToolButton('sequence', el)"
+            :class="[toolMode === 'sequence' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
+            class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
+            :disabled="!hasImage"
+            title="Sequence (7)"
+            @click="setToolMode('sequence')"
+          >
+            <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'sequence' }" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" /><text x="12" y="15.5" text-anchor="middle" font-size="10" font-weight="bold" fill="currentColor">1</text></svg>
+            <span class="hidden sm:inline">Sequence</span>
           </button>
           <button
             type="button"
