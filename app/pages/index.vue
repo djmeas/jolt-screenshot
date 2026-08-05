@@ -1397,6 +1397,17 @@ function onCanvasClick(e: MouseEvent) {
     return
   }
 
+  if (toolMode.value === 'sequence') {
+    pushAnnotationState()
+    annotations.value = [...annotations.value, {
+      type: 'sequence',
+      x, y,
+      radius: SEQ_RADIUS,
+    }]
+    redrawCanvas()
+    return
+  }
+
   if (toolMode.value === 'text') {
     textInputCanvasPos.value = { x, y }
     textInputValue.value = ''
@@ -2452,6 +2463,7 @@ const TOOL_SHORTCUTS: Record<string, typeof toolMode.value> = {
   '4': 'emoji',
   '5': 'text',
   '6': 'move',
+  '7': 'sequence',
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -2782,6 +2794,18 @@ watch(showHelp, async (isOpen) => {
           >
             <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'move' }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
             <span class="hidden sm:inline">Move</span>
+          </button>
+          <button
+            type="button"
+            :ref="(el) => registerToolButton('sequence', el)"
+            :class="[toolMode === 'sequence' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
+            class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
+            :disabled="!hasImage"
+            title="Sequence (7)"
+            @click="setToolMode('sequence')"
+          >
+            <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'sequence' }" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" /><text x="12" y="15.5" text-anchor="middle" font-size="10" font-weight="bold" fill="currentColor">1</text></svg>
+            <span class="hidden sm:inline">Sequence</span>
           </button>
         </div>
 
