@@ -2476,8 +2476,8 @@ const TOOL_SHORTCUTS: Record<string, typeof toolMode.value> = {
   '3': 'box',
   '4': 'emoji',
   '5': 'text',
-  '6': 'move',
-  '7': 'sequence',
+  '6': 'sequence',
+  '7': 'move',
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -2821,7 +2821,7 @@ watch(showHelp, async (isOpen) => {
             :class="[toolMode === 'sequence' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
             class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
             :disabled="!hasImage"
-            title="Sequence (7)"
+            title="Sequence (6)"
             @click="setToolMode('sequence')"
           >
             <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'sequence' }" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" /><text x="12" y="15.5" text-anchor="middle" font-size="10" font-weight="bold" fill="currentColor">1</text></svg>
@@ -2833,7 +2833,7 @@ watch(showHelp, async (isOpen) => {
             :class="[toolMode === 'move' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
             class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
             :disabled="!hasImage"
-            title="Move (6)"
+            title="Move (7)"
             @click="setToolMode('move')"
           >
             <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'move' }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
@@ -2984,10 +2984,11 @@ watch(showHelp, async (isOpen) => {
           </div>
         </div>
 
-        <!-- Sequence label size (desktop) -->
-        <div class="hidden xl:block w-px h-5 mx-1.5 shrink-0" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
-        <div class="hidden xl:flex items-center gap-2 shrink-0">
-          <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Seq size</span>
+        <!-- Sequence label size (desktop, sequence tool only) -->
+        <template v-if="toolMode === 'sequence'">
+          <div class="hidden xl:block w-px h-5 mx-1.5 shrink-0" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
+          <div class="hidden xl:flex items-center gap-2 shrink-0">
+            <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Sequence Label Size</span>
           <button
             type="button"
             class="px-2 py-1 rounded-md text-xs font-medium transition-colors"
@@ -3007,7 +3008,8 @@ watch(showHelp, async (isOpen) => {
             @input="sequenceLabelSize = Number(($event.target as HTMLInputElement).value)"
           />
           <span class="text-xs tabular-nums" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">{{ Math.round(getEffectiveSequenceRadius()) }}px</span>
-        </div>
+          </div>
+        </template>
 
         <!-- Text font size (desktop, text tool only) -->
         <template v-if="toolMode === 'text'">
@@ -3201,8 +3203,8 @@ watch(showHelp, async (isOpen) => {
             </div>
           </div>
 
-          <div>
-            <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Seq size</span>
+          <div v-if="toolMode === 'sequence'">
+            <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Sequence Label Size</span>
             <div class="flex items-center gap-2 mt-2">
               <button
                 type="button"
