@@ -45,6 +45,7 @@ export type SavedSettings = {
   strokeWidth: number
   textFontSize: number
   emojiSize: number
+  sequenceLabelSize?: number | 'auto'
 }
 
 export type SavedProject = {

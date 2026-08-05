@@ -1847,6 +1847,7 @@ function buildSavedSettings(): SavedSettings {
     strokeWidth: strokeWidth.value,
     textFontSize: textFontSize.value,
     emojiSize: emojiSize.value,
+    sequenceLabelSize: sequenceLabelSize.value,
   }
 }
 
@@ -1984,6 +1985,7 @@ async function loadSavedProjectIntoCanvas(id: string) {
     strokeWidth.value = saved.settings.strokeWidth
     textFontSize.value = saved.settings.textFontSize
     emojiSize.value = saved.settings.emojiSize
+    sequenceLabelSize.value = saved.settings.sequenceLabelSize ?? 'auto'
 
     if (saved.strip && saved.strip.segments.length > 1) {
       stripSegments.value = saved.strip.segments.map(s => ({ x: s.x, width: s.width, labelText: s.labelText ?? '' }))
@@ -2610,7 +2612,7 @@ watch(showSavesPanel, (open) => {
   if (open) nextTick(refreshSavedList)
 })
 
-watch([textFontSize, emojiSize], () => {
+watch([textFontSize, emojiSize, sequenceLabelSize], () => {
   scheduleAutoSave()
 })
 
