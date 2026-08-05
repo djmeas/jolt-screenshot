@@ -2518,6 +2518,19 @@ function handleKeydown(e: KeyboardEvent) {
     return
   }
 
+  if ((e.key === 'Delete' || e.key === 'Backspace') && toolMode.value === 'move') {
+    const idx = hoveredAnnotationIndex.value
+    if (idx !== null && idx < annotations.value.length) {
+      e.preventDefault()
+      pushAnnotationState()
+      annotations.value = annotations.value.filter((_, i) => i !== idx)
+      hoveredAnnotationIndex.value = null
+      selectedArrowIndex.value = null
+      redrawCanvas()
+      return
+    }
+  }
+
   if (e.metaKey || e.ctrlKey || e.altKey) return
 
   if (e.key === ' ' && hasImage.value && isZoomed.value && !spacePanActive.value) {
