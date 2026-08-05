@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { assignSequenceNumbers } from '~/utils/sequence'
 
-type AnyAnn = { type: string }
+type AnyAnn = { type: string } & Record<string, unknown>
 
 const seq = (): AnyAnn => ({ type: 'sequence', x: 0, y: 0, radius: 28 })
 
@@ -12,7 +12,7 @@ describe('assignSequenceNumbers', () => {
   })
 
   it('returns an empty map when there are no sequence annotations', () => {
-    expect(assignSequenceNumbers([{ type: 'box' }, { type: 'pen', path: [] }]).size).toBe(0)
+    expect(assignSequenceNumbers([{ type: 'box' }, { type: 'pen', path: [] }] as AnyAnn[]).size).toBe(0)
   })
 
   it('renumbers contiguously after deleting the middle of 1..5 → 1..4', () => {
