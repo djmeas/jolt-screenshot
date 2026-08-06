@@ -18,17 +18,6 @@ export function exportDurationMs(total: number, msPerAnnotation: number): number
   return VIDEO_LEAD_MS + total * msPerAnnotation + VIDEO_TAIL_MS
 }
 
-export function baseRevealWidth(
-  segments: readonly { x: number, width: number }[],
-  shownCount: number,
-  canvasWidth: number,
-): number {
-  if (segments.length === 0 || shownCount >= segments.length) return canvasWidth
-  const seg = segments[shownCount - 1]
-  if (!seg) return canvasWidth
-  return Math.min(canvasWidth, seg.x + seg.width)
-}
-
 const MIME_CANDIDATES: { mimeType: string, extension: string }[] = [
   { mimeType: 'video/mp4;codecs="avc1.42E01E"', extension: 'mp4' },
   { mimeType: 'video/mp4', extension: 'mp4' },

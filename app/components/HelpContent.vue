@@ -19,7 +19,7 @@ defineProps<{
       The fastest way to start is to copy a screenshot from anywhere on your computer and paste it in. On a Mac, that's <span class="font-semibold">Cmd+V</span>; on Windows or Linux, it's <span class="font-semibold">Ctrl+V</span>. JoltShot accepts PNG, JPEG, WebP, and other common image formats.
     </p>
     <p :class="[isDark ? 'text-zinc-300' : 'text-zinc-700']" class="text-sm leading-relaxed mt-3">
-      If you have an image file you'd rather upload, drop it onto the page or use the upload button at the top. Once an image is loaded, pasting or uploading another one will ask whether to replace it, append it to the right as a new image in a sequence, or add it as a movable layer on top.
+      If you have an image file you'd rather upload, drop it onto the page or use the upload button at the top. Once an image is loaded, pasting or uploading another one will ask whether to replace it, append it to any edge as a new image in a sequence, or add it as a movable layer on top.
     </p>
 
     <h3 :class="[isDark ? 'text-zinc-100' : 'text-slate-900']" class="text-base font-semibold mt-5 mb-1.5">
@@ -39,7 +39,7 @@ defineProps<{
       Stitch multiple screenshots
     </h3>
     <p :class="[isDark ? 'text-zinc-300' : 'text-zinc-700']" class="text-sm leading-relaxed">
-      To show a sequence — a before/after, a step-by-step, a bug repro — paste a second screenshot and choose <span class="font-semibold">Append to right</span>. JoltShot glues the two images side by side into one wide strip, with a small white gap between them. Paste a third and it joins the chain. The canvas grows automatically.
+      To show a sequence — a before/after, a step-by-step, a bug repro — paste a second screenshot and choose <span class="font-semibold">Append to image</span>, then pick an edge: top, bottom, left, or right. JoltShot glues the two images together along that edge into one strip, with a small white gap between them. Paste a third and it joins the chain. The canvas grows automatically.
     </p>
     <p :class="[isDark ? 'text-zinc-300' : 'text-zinc-700']" class="text-sm leading-relaxed mt-3">
       Each image in the strip gets a small numbered circle in the top-left corner. Click any of them to rename it — for example "Step 1", "Before", or "A". The circle turns into a pill that grows to fit the text. Clear the field and it reverts to the auto-number.

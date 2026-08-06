@@ -32,6 +32,8 @@ export type SavedBaseImage = {
 export type SavedStripSegment = {
   x: number
   width: number
+  y?: number
+  height?: number
   labelText?: string
 }
 
@@ -40,12 +42,20 @@ export type SavedStrip = {
   labelsEnabled: boolean
 }
 
+export type SavedGradientBorder = {
+  from: string
+  to: string
+  angle: number
+}
+
 export type SavedSettings = {
   strokeColor: string
   strokeWidth: number
   textFontSize: number
   emojiSize: number
   sequenceLabelSize?: number | 'auto'
+  borderGradient?: SavedGradientBorder | null
+  borderThickness?: number
 }
 
 export type SavedProject = {
