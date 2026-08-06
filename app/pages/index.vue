@@ -1,6 +1,35 @@
 <script setup lang="ts">
 import logoImg from '~/assets/img/JoltSlashLogo.png'
 import {
+  annotationIndexAt,
+  blurRadiusForCanvas,
+  eraseAnnotationAt,
+  getArrowTip,
+  hitTestArrow,
+  type Annotation,
+  type ArrowAnnotation,
+  type BlurAnnotation,
+  type BoxAnnotation,
+  type EmojiAnnotation,
+  type ImageAnnotation,
+  type PenStroke,
+  type TextAnnotation,
+  type ToolMode,
+} from '~/utils/annotations'
+import {
+  DEFAULT_ANNOTATIONS_PER_SECOND,
+  MAX_ANNOTATIONS_PER_SECOND,
+  MIN_ANNOTATIONS_PER_SECOND,
+  clampAnnotationsPerSecond,
+  exportDurationMs,
+  supportedVideoMimeTypes,
+  visibleAnnotationCount,
+  baseRevealWidth,
+} from '~/utils/video-export'
+import { TOOLS, buildToolShortcuts, type ToolDescriptor } from '~/utils/tools'
+import { SAVES_ENABLED } from '~/utils/config'
+import { exportFileName } from '~/utils/download'
+import {
   type SavedProjectMeta,
   type SavedBaseImage,
   type SavedLayer,
@@ -47,8 +76,16 @@ const spacePanActive = ref(false)
 const isPanning = ref(false)
 const panStart = ref<{ x: number, y: number, viewX: number, viewY: number } | null>(null)
 
-// Tool mode: pen | arrow | box | emoji | text | move
-const toolMode = ref<'pen' | 'arrow' | 'box' | 'emoji' | 'text' | 'move' | 'sequence'>('pen')
+// Tool mode: pen | arrow | box | emoji | text | sequence | move | eraser | blur
+const toolMode = ref<ToolMode>('pen')
+
+// Eraser tool: drag to remove whole annotations under the cursor
+const eraseStrokeActive = ref(false)
+const eraseStrokeRemoved = ref(false)
+
+// Blur tool: drag out a region to redact
+const blurStart = ref<{ x: number, y: number } | null>(null)
+const blurPreview = ref<{ x: number, y: number } | null>(null)
 
 // Move tool: drag an existing annotation
 const moveDragging = ref(false)
@@ -168,18 +205,10 @@ function resetStripState() {
 }
 
 const sequenceLabelSize = ref<number | 'auto'>('auto')
-type SequenceAnnotation = { type: 'sequence', x: number, y: number }
 
 function getEffectiveSequenceRadius(): number {
   return resolveSequenceRadius(sequenceLabelSize.value, getCanvas()?.height ?? 0)
 }
-type PenStroke = { type: 'pen', path: { x: number, y: number }[], color: string, lineWidth: number }
-type ArrowAnnotation = { type: 'arrow', x1: number, y1: number, length: number, angle: number, color: string, lineWidth: number }
-type BoxAnnotation = { type: 'box', x: number, y: number, width: number, height: number, color: string, lineWidth: number }
-type EmojiAnnotation = { type: 'emoji', x: number, y: number, emoji: string, size: number }
-type TextAnnotation = { type: 'text', x: number, y: number, text: string, fontSize: number, color: string }
-type ImageAnnotation = { type: 'image', id: string, objectUrl: string | null, x: number, y: number, width: number, height: number }
-type Annotation = PenStroke | ArrowAnnotation | BoxAnnotation | EmojiAnnotation | TextAnnotation | ImageAnnotation | SequenceAnnotation
 
 const annotations = ref<Annotation[]>([])
 const annotationHistory = ref<Annotation[][]>([])
@@ -550,7 +579,7 @@ function drawNavigatorThumbnail(ctx: CanvasRenderingContext2D, _scale: number) {
   const canvas = getCanvas()
   if (!base || !canvas) return
   ctx.drawImage(base.image, 0, 0, canvas.width, canvas.height)
-  drawAnnotations(ctx)
+  drawAnnotations(ctx, annotations.value, canvas)
 }
 
 function onNavigatorPan(imageX: number, imageY: number) {
@@ -612,10 +641,64 @@ function drawArrow(ctx: CanvasRenderingContext2D, a: ArrowAnnotation) {
   drawArrowHead(ctx, { x: a.x1, y: a.y1 }, { x: x2, y: y2 }, a.color, a.lineWidth)
 }
 
-function drawAnnotations(ctx: CanvasRenderingContext2D) {
-  const sequenceNumbers = assignSequenceNumbers(annotations.value)
-  for (let i = 0; i < annotations.value.length; i++) {
-    const ann = annotations.value[i]!
+let blurScratchCanvas: HTMLCanvasElement | null = null
+let blurPixelCanvas: HTMLCanvasElement | null = null
+let canvasFilterSupported: boolean | null = null
+
+function detectCanvasFilterSupport(ctx: CanvasRenderingContext2D): boolean {
+  if (canvasFilterSupported !== null) return canvasFilterSupported
+  const probe = 'blur(1px)'
+  const prev = (ctx as CanvasRenderingContext2D & { filter?: string }).filter
+  ;(ctx as CanvasRenderingContext2D & { filter?: string }).filter = probe
+  canvasFilterSupported = (ctx as CanvasRenderingContext2D & { filter?: string }).filter === probe
+  ;(ctx as CanvasRenderingContext2D & { filter?: string }).filter = prev ?? 'none'
+  return canvasFilterSupported
+}
+
+function drawBlurRegion(ctx: CanvasRenderingContext2D, ann: BlurAnnotation, source: HTMLCanvasElement) {
+  const sx = Math.max(0, Math.floor(ann.x))
+  const sy = Math.max(0, Math.floor(ann.y))
+  const w = Math.min(Math.ceil(ann.x + ann.width), source.width) - sx
+  const h = Math.min(Math.ceil(ann.y + ann.height), source.height) - sy
+  if (w <= 0 || h <= 0) return
+
+  if (!blurScratchCanvas) blurScratchCanvas = document.createElement('canvas')
+  blurScratchCanvas.width = w
+  blurScratchCanvas.height = h
+  const sctx = blurScratchCanvas.getContext('2d')
+  if (!sctx) return
+  sctx.drawImage(source, sx, sy, w, h, 0, 0, w, h)
+
+  const radius = blurRadiusForRegion(source.width, ann.width, ann.height)
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(ann.x, ann.y, ann.width, ann.height)
+  ctx.clip()
+  if (detectCanvasFilterSupport(ctx)) {
+    ctx.filter = `blur(${radius}px)`
+    ctx.drawImage(blurScratchCanvas, 0, 0, w, h, ann.x, ann.y, ann.width, ann.height)
+  } else {
+    // Pixelate fallback for browsers without canvas filter support
+    const factor = Math.max(2, Math.round(radius / 2))
+    const dw = Math.max(1, Math.round(w / factor))
+    const dh = Math.max(1, Math.round(h / factor))
+    if (!blurPixelCanvas) blurPixelCanvas = document.createElement('canvas')
+    blurPixelCanvas.width = dw
+    blurPixelCanvas.height = dh
+    const pctx = blurPixelCanvas.getContext('2d')
+    if (pctx) {
+      pctx.drawImage(blurScratchCanvas, 0, 0, w, h, 0, 0, dw, dh)
+      ctx.imageSmoothingEnabled = false
+      ctx.drawImage(blurPixelCanvas, 0, 0, dw, dh, ann.x, ann.y, ann.width, ann.height)
+    }
+  }
+  ctx.restore()
+}
+
+function drawAnnotations(ctx: CanvasRenderingContext2D, anns: Annotation[] = annotations.value, sourceCanvas?: HTMLCanvasElement) {
+  const sequenceNumbers = assignSequenceNumbers(anns)
+  for (let i = 0; i < anns.length; i++) {
+    const ann = anns[i]!
     if (ann.type === 'image') {
       const img = imageElementCache.get(ann.id)
       if (img) ctx.drawImage(img, ann.x, ann.y, ann.width, ann.height)
@@ -646,6 +729,8 @@ function drawAnnotations(ctx: CanvasRenderingContext2D) {
       ctx.textBaseline = 'middle'
       ctx.fillStyle = '#000000'
       ctx.fillText(String(number), ann.x, ann.y)
+    } else if (ann.type === 'blur') {
+      drawBlurRegion(ctx, ann, sourceCanvas ?? ctx.canvas)
     } else if (ann.type === 'arrow') {
       drawArrow(ctx, ann)
     } else if (ann.type === 'box') {
@@ -742,12 +827,13 @@ function hitTestLabel(canvasX: number, canvasY: number, ctx: CanvasRenderingCont
   return null
 }
 
-function drawStripLabels(ctx: CanvasRenderingContext2D) {
+function drawStripLabels(ctx: CanvasRenderingContext2D, maxCount = stripSegments.value.length) {
   const canvas = getCanvas()
   if (!canvas || stripSegments.value.length < 2 || !labelsEnabled.value) return
   const radius = Math.min(28, Math.max(14, canvas.height * 0.03))
   ctx.save()
-  for (let i = 0; i < stripSegments.value.length; i++) {
+  const count = Math.min(maxCount, stripSegments.value.length)
+  for (let i = 0; i < count; i++) {
     const seg = stripSegments.value[i]!
     const m = getLabelMetrics(seg, i, radius, ctx)
     ctx.beginPath()
@@ -801,6 +887,22 @@ function redrawCanvas() {
   if (toolMode.value === 'move' && handleIndex !== null && !moveDragging.value) {
     const ann = annotations.value[handleIndex]
     if (ann) drawResizeHandles(ctx, ann)
+  }
+
+  // Preview: blur region being drawn
+  if (blurStart.value && blurPreview.value) {
+    const x = Math.min(blurStart.value.x, blurPreview.value.x)
+    const y = Math.min(blurStart.value.y, blurPreview.value.y)
+    const w = Math.abs(blurPreview.value.x - blurStart.value.x)
+    const h = Math.abs(blurPreview.value.y - blurStart.value.y)
+    ctx.save()
+    ctx.fillStyle = 'rgba(99, 102, 241, 0.15)'
+    ctx.fillRect(x, y, w, h)
+    ctx.strokeStyle = '#6366f1'
+    ctx.lineWidth = 2
+    ctx.setLineDash([6, 4])
+    ctx.strokeRect(x, y, w, h)
+    ctx.restore()
   }
 
   // Preview: box being drawn
@@ -887,12 +989,6 @@ function hitTestImageCorner(ann: ImageAnnotation, canvasX: number, canvasY: numb
   return null
 }
 
-function hitTestImage(ann: ImageAnnotation, x: number, y: number): boolean {
-  const margin = 4
-  return x >= ann.x - margin && x <= ann.x + ann.width + margin &&
-    y >= ann.y - margin && y <= ann.y + ann.height + margin
-}
-
 function drawResizeHandles(ctx: CanvasRenderingContext2D, ann: Annotation) {
   if (ann.type === 'image') {
     ctx.strokeStyle = 'rgba(59, 130, 246, 0.85)'
@@ -928,6 +1024,10 @@ function resetDrawingState() {
   arrowPreview.value = null
   boxStart.value = null
   boxPreview.value = null
+  blurStart.value = null
+  blurPreview.value = null
+  eraseStrokeActive.value = false
+  eraseStrokeRemoved.value = false
   moveDragging.value = false
   moveTargetIndex.value = null
   moveStartPos.value = null
@@ -1181,6 +1281,8 @@ function startDrawing(e: MouseEvent | TouchEvent) {
           resizeStartValue.value = { length: ann.length, angle: ann.angle }
         } else if (ann.type === 'box') {
           resizeStartValue.value = { width: ann.width, height: ann.height }
+        } else if (ann.type === 'blur') {
+          resizeStartValue.value = { width: ann.width, height: ann.height }
         } else if (ann.type === 'emoji') {
           resizeStartValue.value = { size: ann.size }
         } else if (ann.type === 'text') {
@@ -1206,6 +1308,19 @@ function startDrawing(e: MouseEvent | TouchEvent) {
         moveDragging.value = true
       }
     }
+    return
+  }
+
+  if (toolMode.value === 'eraser') {
+    eraseStrokeActive.value = true
+    eraseStrokeRemoved.value = false
+    eraseAtPoint(x, y)
+    return
+  }
+
+  if (toolMode.value === 'blur') {
+    blurStart.value = { x, y }
+    blurPreview.value = { x, y }
     return
   }
 
@@ -1250,7 +1365,12 @@ function draw(e: MouseEvent | TouchEvent) {
   if (!coords) return
   const { x, y } = coords
 
-  if (toolMode.value === 'pen' && isDrawing.value) {
+  if (toolMode.value === 'eraser' && eraseStrokeActive.value) {
+    eraseAtPoint(x, y)
+  } else if (toolMode.value === 'blur' && blurStart.value) {
+    blurPreview.value = { x, y }
+    redrawCanvas()
+  } else if (toolMode.value === 'pen' && isDrawing.value) {
     currentPath.value = [...currentPath.value, { x, y }]
     const ctx = getCanvasContext()
     if (!ctx) return
@@ -1307,6 +1427,28 @@ function stopDrawing(e: MouseEvent | TouchEvent) {
   if (isPanning.value) {
     isPanning.value = false
     panStart.value = null
+    return
+  }
+  if (toolMode.value === 'eraser' && eraseStrokeActive.value) {
+    eraseStrokeActive.value = false
+    if (eraseStrokeRemoved.value) {
+      eraseStrokeRemoved.value = false
+      scheduleAutoSave()
+    }
+    return
+  }
+  if (toolMode.value === 'blur' && blurStart.value && blurPreview.value) {
+    const x = Math.min(blurStart.value.x, blurPreview.value.x)
+    const y = Math.min(blurStart.value.y, blurPreview.value.y)
+    const width = Math.abs(blurPreview.value.x - blurStart.value.x)
+    const height = Math.abs(blurPreview.value.y - blurStart.value.y)
+    if (width >= 4 && height >= 4) {
+      pushAnnotationState()
+      annotations.value = [...annotations.value, { type: 'blur', x, y, width, height }]
+    }
+    blurStart.value = null
+    blurPreview.value = null
+    redrawCanvas()
     return
   }
   if (toolMode.value === 'pen' && isDrawing.value) {
@@ -1506,57 +1648,6 @@ function onTextInputKeydown(e: KeyboardEvent) {
   }
 }
 
-function getArrowTip(a: ArrowAnnotation) {
-  return {
-    x: a.x1 + a.length * Math.cos(a.angle),
-    y: a.y1 + a.length * Math.sin(a.angle)
-  }
-}
-
-function hitTestArrow(arrow: ArrowAnnotation, x: number, y: number): boolean {
-  const tip = getArrowTip(arrow)
-  const dist = Math.hypot(x - tip.x, y - tip.y)
-  const distTail = Math.hypot(x - arrow.x1, y - arrow.y1)
-  const threshold = 20
-  return dist < threshold || distTail < threshold || (Math.abs((x - arrow.x1) * Math.sin(arrow.angle) - (y - arrow.y1) * Math.cos(arrow.angle)) < threshold && (x - arrow.x1) * Math.cos(arrow.angle) + (y - arrow.y1) * Math.sin(arrow.angle) >= 0 && (x - arrow.x1) * Math.cos(arrow.angle) + (y - arrow.y1) * Math.sin(arrow.angle) <= arrow.length)
-}
-
-function hitTestEmoji(emoji: EmojiAnnotation, x: number, y: number): boolean {
-  const r = Math.max(emoji.size * 0.6, 16)
-  return Math.hypot(x - emoji.x, y - emoji.y) <= r
-}
-
-function hitTestText(text: TextAnnotation, x: number, y: number): boolean {
-  const padding = Math.max(text.fontSize, 20)
-  const lines = text.text.split('\n')
-  const lineHeight = text.fontSize * 1.2
-  const height = lines.length * lineHeight
-  return x >= text.x - padding && x <= text.x + 300 && y >= text.y - padding && y <= text.y + height + padding
-}
-
-function hitTestPenStroke(pen: PenStroke, x: number, y: number): boolean {
-  if (pen.path.length < 2) return false
-  const margin = pen.lineWidth * 2 + 8
-  let minX = pen.path[0].x, maxX = pen.path[0].x, minY = pen.path[0].y, maxY = pen.path[0].y
-  for (const p of pen.path) {
-    minX = Math.min(minX, p.x)
-    maxX = Math.max(maxX, p.x)
-    minY = Math.min(minY, p.y)
-    maxY = Math.max(maxY, p.y)
-  }
-  return x >= minX - margin && x <= maxX + margin && y >= minY - margin && y <= maxY + margin
-}
-
-function hitTestBox(box: BoxAnnotation, x: number, y: number): boolean {
-  const margin = Math.max(box.lineWidth * 2, 12)
-  return x >= box.x - margin && x <= box.x + box.width + margin &&
-    y >= box.y - margin && y <= box.y + box.height + margin
-}
-
-function hitTestSequence(seq: SequenceAnnotation, x: number, y: number): boolean {
-  return Math.hypot(x - seq.x, y - seq.y) <= getEffectiveSequenceRadius()
-}
-
 const RESIZE_HANDLE_RADIUS = 24
 const RESIZE_HANDLE_DRAW_RADIUS = 12
 const MAX_UNDO_DEPTH = 100
@@ -1583,6 +1674,7 @@ function getHoveredAnnotationForMoveMode(canvasX: number, canvasY: number): numb
 function getResizeHandlePosition(ann: Annotation): { x: number, y: number } | null {
   if (ann.type === 'arrow') return getArrowTip(ann)
   if (ann.type === 'box') return { x: ann.x + ann.width, y: ann.y + ann.height }
+  if (ann.type === 'blur') return { x: ann.x + ann.width, y: ann.y + ann.height }
   if (ann.type === 'emoji') return { x: ann.x + ann.size / 2, y: ann.y + ann.size / 2 }
   if (ann.type === 'text') {
     const ctx = getCanvasContext()
@@ -1615,17 +1707,20 @@ function hitTestResizeHandle(index: number, canvasX: number, canvasY: number): b
 }
 
 function getAnnotationAt(canvasX: number, canvasY: number): number | null {
-  for (let i = annotations.value.length - 1; i >= 0; i--) {
-    const ann = annotations.value[i]
-    if (ann.type === 'image' && hitTestImage(ann, canvasX, canvasY)) return i
-    if (ann.type === 'arrow' && hitTestArrow(ann, canvasX, canvasY)) return i
-    if (ann.type === 'box' && hitTestBox(ann, canvasX, canvasY)) return i
-    if (ann.type === 'emoji' && hitTestEmoji(ann, canvasX, canvasY)) return i
-    if (ann.type === 'text' && hitTestText(ann, canvasX, canvasY)) return i
-    if (ann.type === 'pen' && hitTestPenStroke(ann, canvasX, canvasY)) return i
-    if (ann.type === 'sequence' && hitTestSequence(ann, canvasX, canvasY)) return i
+  return annotationIndexAt(annotations.value, canvasX, canvasY, getEffectiveSequenceRadius())
+}
+
+function eraseAtPoint(x: number, y: number) {
+  const result = eraseAnnotationAt(annotations.value, x, y, getEffectiveSequenceRadius())
+  if (!result) return
+  if (!eraseStrokeRemoved.value) {
+    pushAnnotationState()
+    eraseStrokeRemoved.value = true
   }
-  return null
+  annotations.value = result.annotations
+  hoveredAnnotationIndex.value = null
+  selectedArrowIndex.value = null
+  redrawCanvas()
 }
 
 function translateAnnotation(index: number, dx: number, dy: number) {
@@ -1635,6 +1730,8 @@ function translateAnnotation(index: number, dx: number, dy: number) {
   if (ann.type === 'arrow') {
     next[index] = { ...ann, x1: ann.x1 + dx, y1: ann.y1 + dy }
   } else if (ann.type === 'box') {
+    next[index] = { ...ann, x: ann.x + dx, y: ann.y + dy }
+  } else if (ann.type === 'blur') {
     next[index] = { ...ann, x: ann.x + dx, y: ann.y + dy }
   } else if (ann.type === 'emoji') {
     next[index] = { ...ann, x: ann.x + dx, y: ann.y + dy }
@@ -1662,7 +1759,7 @@ function resizeAnnotation(index: number, canvasX: number, canvasY: number, prese
     const length = Math.sqrt(dx * dx + dy * dy) || 1
     const angle = Math.atan2(dy, dx)
     next[index] = { ...ann, length, angle }
-  } else if (ann.type === 'box' && startVal.width != null && startVal.height != null) {
+  } else if ((ann.type === 'box' || ann.type === 'blur') && startVal.width != null && startVal.height != null) {
     const minSize = 8
     let newWidth = Math.max(minSize, canvasX - ann.x)
     let newHeight = Math.max(minSize, canvasY - ann.y)
@@ -1789,6 +1886,161 @@ async function copyToClipboard() {
   }
 }
 
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+}
+
+// Export menu (save image / video)
+const showExportMenu = ref(false)
+const exportMenuRef = ref<HTMLDivElement | null>(null)
+const exportMenuButtonRef = ref<HTMLButtonElement | null>(null)
+
+function closeExportMenu() {
+  showExportMenu.value = false
+}
+
+function toggleExportMenu() {
+  if (!hasImage.value) return
+  showExportMenu.value = !showExportMenu.value
+}
+
+async function saveImageToDisk() {
+  const canvas = getCanvas()
+  if (!canvas || !hasImage.value) return
+  try {
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, 'image/png')
+    })
+    if (!blob) throw new Error('Failed to create blob')
+    downloadBlob(blob, exportFileName(projectName.value, 'png'))
+  } catch (err) {
+    console.error('Failed to save image:', err)
+  }
+}
+
+// Video export: replay annotations appearing in sequence into a recorded canvas stream
+const showVideoExport = ref(false)
+const videoRate = ref<number>(DEFAULT_ANNOTATIONS_PER_SECOND)
+const isExportingVideo = ref(false)
+const videoExportProgress = ref(0)
+const videoExportError = ref<string | null>(null)
+
+const videoExportDurationLabel = computed(() => {
+  const extraSegments = Math.max(0, stripSegments.value.length - 1)
+  const ms = exportDurationMs(extraSegments + annotations.value.length, 1000 / clampAnnotationsPerSecond(videoRate.value))
+  return `${(ms / 1000).toFixed(1)}s`
+})
+
+async function exportVideo() {
+  const canvas = getCanvas()
+  const base = baseImage.value
+  if (!canvas || !base || isExportingVideo.value) return
+  if (typeof MediaRecorder === 'undefined' || typeof HTMLCanvasElement.prototype.captureStream !== 'function') {
+    videoExportError.value = 'Video recording is not supported in this browser.'
+    return
+  }
+  const candidates = supportedVideoMimeTypes(m => MediaRecorder.isTypeSupported(m))
+  if (candidates.length === 0) {
+    videoExportError.value = 'Video recording is not supported in this browser.'
+    return
+  }
+  isExportingVideo.value = true
+  videoExportProgress.value = 0
+  videoExportError.value = null
+
+  const rate = clampAnnotationsPerSecond(videoRate.value)
+  const msPer = 1000 / rate
+  const segments = stripSegments.value
+  const extraSegments = Math.max(0, segments.length - 1)
+  const total = extraSegments + annotations.value.length
+  const duration = exportDurationMs(total, msPer)
+
+  const drawFrameAt = (octx: CanvasRenderingContext2D, off: HTMLCanvasElement, elapsed: number) => {
+    const revealed = visibleAnnotationCount(elapsed, total, msPer)
+    const segsRevealed = Math.min(revealed, extraSegments)
+    const annsRevealed = revealed - segsRevealed
+    const revealW = baseRevealWidth(segments, 1 + segsRevealed, off.width)
+    octx.fillStyle = '#ffffff'
+    octx.fillRect(0, 0, off.width, off.height)
+    octx.drawImage(base.image, 0, 0, revealW, off.height, 0, 0, revealW, off.height)
+    drawAnnotations(octx, annotations.value.slice(0, annsRevealed), off)
+    drawStripLabels(octx, 1 + segsRevealed)
+    videoExportProgress.value = Math.min(1, elapsed / duration)
+  }
+
+  const recordAttempt = async (mimeType: string): Promise<Blob> => {
+    const off = document.createElement('canvas')
+    off.width = canvas.width
+    off.height = canvas.height
+    const octx = off.getContext('2d')
+    if (!octx) throw new Error('no-2d-context')
+    // Paint a frame before starting so the stream has content immediately
+    drawFrameAt(octx, off, 0)
+    const stream = off.captureStream(30)
+    const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 8_000_000 })
+    const chunks: Blob[] = []
+    let recorderFailed = false
+    recorder.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
+    recorder.onerror = (e) => {
+      recorderFailed = true
+      console.error('[video-export] recorder error:', e)
+    }
+    const stopped = new Promise<void>((resolve) => { recorder.onstop = () => resolve() })
+    recorder.start(250)
+    const start = performance.now()
+    await new Promise<void>((resolve) => {
+      const frame = () => {
+        const elapsed = performance.now() - start
+        drawFrameAt(octx, off, elapsed)
+        if (elapsed >= duration || recorderFailed) resolve()
+        else requestAnimationFrame(frame)
+      }
+      requestAnimationFrame(frame)
+    })
+    if (recorder.state !== 'inactive') {
+      recorder.requestData()
+      recorder.stop()
+    }
+    await stopped
+    for (const track of stream.getTracks()) track.stop()
+    if (recorderFailed) throw new Error('recorder-error')
+    const blob = new Blob(chunks, { type: mimeType })
+    console.info(`[video-export] ${mimeType}: ${chunks.length} chunks, ${blob.size} bytes`)
+    return blob
+  }
+
+  try {
+    let result: { blob: Blob, extension: string } | null = null
+    for (const candidate of candidates) {
+      try {
+        const blob = await recordAttempt(candidate.mimeType)
+        if (blob.size > 0) {
+          result = { blob, extension: candidate.extension }
+          break
+        }
+        console.warn(`[video-export] ${candidate.mimeType} produced an empty file, trying next format`)
+      } catch (err) {
+        console.warn(`[video-export] ${candidate.mimeType} failed, trying next format`, err)
+      }
+    }
+    if (!result) throw new Error('no-working-format')
+    downloadBlob(result.blob, exportFileName(projectName.value, result.extension))
+    showVideoExport.value = false
+  } catch (err) {
+    console.error('Video export failed:', err)
+    videoExportError.value = 'Video export failed in this browser.'
+  } finally {
+    isExportingVideo.value = false
+  }
+}
+
 async function blobToDataUrl(blobOrUrl: Blob | string): Promise<string | null> {
   try {
     if (typeof blobOrUrl === 'string') {
@@ -1852,6 +2104,7 @@ function buildSavedSettings(): SavedSettings {
 }
 
 async function performSave(opts: { silent?: boolean } = {}): Promise<boolean> {
+  if (!SAVES_ENABLED) return false
   const canvas = getCanvas()
   if (!canvas || !hasImage.value) return false
   const generationAtStart = autoSaveGeneration
@@ -1920,6 +2173,7 @@ function invalidateAutoSave() {
 }
 
 function scheduleAutoSave() {
+  if (!SAVES_ENABLED) return
   if (!hasImage.value) return
   const generation = autoSaveGeneration
   if (autoSaveTimer) clearTimeout(autoSaveTimer)
@@ -2037,12 +2291,13 @@ function startNewProject() {
 }
 
 function toggleSavesPanel() {
+  if (!SAVES_ENABLED) return
   showSavesPanel.value = !showSavesPanel.value
   if (showSavesPanel.value) refreshSavedList()
 }
 
 function confirmClearWithSave() {
-  if (!hasImage.value) {
+  if (!SAVES_ENABLED || !hasImage.value) {
     clearAnnotations()
     return
   }
@@ -2104,6 +2359,10 @@ function setToolMode(mode: typeof toolMode.value) {
   toolMode.value = mode
   boxStart.value = null
   boxPreview.value = null
+  blurStart.value = null
+  blurPreview.value = null
+  eraseStrokeActive.value = false
+  eraseStrokeRemoved.value = false
   showEmojiPicker.value = false
   pendingEmoji.value = null
   selectedArrowIndex.value = null
@@ -2431,6 +2690,8 @@ const canvasCursorClass = computed(() => {
     text: 'cursor-text',
     move: 'cursor-grab active:cursor-grabbing',
     sequence: 'cursor-crosshair',
+    eraser: 'cursor-pointer',
+    blur: 'cursor-crosshair',
   }
   return cursors[toolMode.value]
 })
@@ -2459,6 +2720,10 @@ function toggleEmojiTool() {
 
 function onDocumentClick(e: MouseEvent) {
   const target = e.target as Node
+  if (showExportMenu.value) {
+    const inside = exportMenuRef.value?.contains(target) || exportMenuButtonRef.value?.contains(target)
+    if (!inside) closeExportMenu()
+  }
   if (showColorPicker.value) {
     const inside = colorPickerWrapRef.value?.contains(target)
       || customSwatchRef.value?.contains(target)
@@ -2470,15 +2735,7 @@ function onDocumentClick(e: MouseEvent) {
   closeToolbarMenu()
 }
 
-const TOOL_SHORTCUTS: Record<string, typeof toolMode.value> = {
-  '1': 'pen',
-  '2': 'arrow',
-  '3': 'box',
-  '4': 'emoji',
-  '5': 'text',
-  '6': 'sequence',
-  '7': 'move',
-}
+const TOOL_SHORTCUTS = buildToolShortcuts(TOOLS.map(t => t.mode)) as Record<string, ToolMode>
 
 function handleKeydown(e: KeyboardEvent) {
   if (isEditableTarget(e.target)) return
@@ -2515,6 +2772,14 @@ function handleKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape') {
     if (showPasteDialog.value) {
       cancelPasteDialog()
+      return
+    }
+    if (showVideoExport.value) {
+      if (!isExportingVideo.value) showVideoExport.value = false
+      return
+    }
+    if (showExportMenu.value) {
+      closeExportMenu()
       return
     }
     if (showColorPicker.value) {
@@ -2704,6 +2969,7 @@ watch(showHelp, async (isOpen) => {
 
         <!-- Saves (desktop) -->
         <button
+          v-if="SAVES_ENABLED"
           ref="savesButtonRef"
           type="button"
           class="hidden xl:flex shrink-0 items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors"
@@ -2732,113 +2998,56 @@ watch(showHelp, async (isOpen) => {
             :class="[isDark ? 'bg-zinc-600' : 'bg-slate-700']"
             :style="toolIndicatorStyle"
           />
-          <button
-            type="button"
-            :ref="(el) => registerToolButton('pen', el)"
-            :class="[toolMode === 'pen' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
-            class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
-            :disabled="!hasImage"
-            title="Pen (1)"
-            @click="setToolMode('pen')"
-          >
-            <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'pen' }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-            <span class="hidden sm:inline">Pen</span>
-          </button>
-          <button
-            type="button"
-            :ref="(el) => registerToolButton('arrow', el)"
-            :class="[toolMode === 'arrow' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
-            class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
-            :disabled="!hasImage"
-            title="Arrow (2)"
-            @click="setToolMode('arrow')"
-          >
-            <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'arrow' }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3" /></svg>
-            <span class="hidden sm:inline">Arrow</span>
-          </button>
-          <button
-            type="button"
-            :ref="(el) => registerToolButton('box', el)"
-            :class="[toolMode === 'box' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
-            class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
-            :disabled="!hasImage"
-            title="Box (3)"
-            @click="setToolMode('box')"
-          >
-            <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'box' }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" /></svg>
-            <span class="hidden sm:inline">Box</span>
-          </button>
-          <div class="relative z-10">
-            <button
-              type="button"
-              :ref="(el) => registerToolButton('emoji', el)"
-              :class="[toolMode === 'emoji' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
-              class="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
-              :disabled="!hasImage"
-              title="Emoji (4)"
-              @click="toggleEmojiTool"
-            >
-              <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'emoji' }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /><path stroke-linecap="round" d="M8 14s1.5 2 4 2 4-2 4-2" /><line x1="9" y1="9" x2="9.01" y2="9" stroke-width="3" stroke-linecap="round" /><line x1="15" y1="9" x2="15.01" y2="9" stroke-width="3" stroke-linecap="round" /></svg>
-              <span class="hidden sm:inline">Emoji</span>
-            </button>
-            <div
-              v-if="showEmojiPicker"
-              class="absolute top-full left-0 mt-2 z-20 rounded-xl shadow-2xl p-3 w-64 max-h-64 overflow-y-auto border"
-              :class="[isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-slate-200']"
-            >
-              <div class="flex items-center justify-between mb-2">
-                <span class="text-xs font-medium" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">Size</span>
-                <input v-model.number="emojiSize" type="range" min="16" max="64" class="w-24 h-1.5 accent-indigo-500" />
-                <span class="text-xs w-8 text-right" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">{{ emojiSize }}px</span>
-              </div>
-              <div class="grid grid-cols-5 gap-1">
-                <button
-                  v-for="em in EMOJI_LIST"
-                  :key="em"
-                  type="button"
-                  class="text-2xl p-1 rounded-lg transition-colors"
-                  :class="[isDark ? 'hover:bg-zinc-800' : 'hover:bg-slate-100']"
-                  @click="placeEmoji(em)"
-                >{{ em }}</button>
+          <template v-for="(tool, i) in TOOLS" :key="tool.mode">
+            <div v-if="tool.hasPicker" class="relative z-10">
+              <button
+                type="button"
+                :ref="(el) => registerToolButton(tool.mode, el)"
+                :class="[toolMode === tool.mode ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
+                class="flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
+                :disabled="!hasImage"
+                :title="`${tool.label} (${i + 1})`"
+                @click="toggleEmojiTool"
+              >
+                <ToolIcon :mode="tool.mode" :pop="toolSwitchAnim && toolMode === tool.mode" />
+                <span class="hidden sm:inline">{{ tool.label }}</span>
+              </button>
+              <div
+                v-if="showEmojiPicker"
+                class="absolute top-full left-0 mt-2 z-20 rounded-xl shadow-2xl p-3 w-64 max-h-64 overflow-y-auto border"
+                :class="[isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-slate-200']"
+              >
+                <div class="flex items-center justify-between mb-2">
+                  <span class="text-xs font-medium" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">Size</span>
+                  <input v-model.number="emojiSize" type="range" min="16" max="64" class="w-24 h-1.5 accent-indigo-500" />
+                  <span class="text-xs w-8 text-right" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">{{ emojiSize }}px</span>
+                </div>
+                <div class="grid grid-cols-5 gap-1">
+                  <button
+                    v-for="em in EMOJI_LIST"
+                    :key="em"
+                    type="button"
+                    class="text-2xl p-1 rounded-lg transition-colors"
+                    :class="[isDark ? 'hover:bg-zinc-800' : 'hover:bg-slate-100']"
+                    @click="placeEmoji(em)"
+                  >{{ em }}</button>
+                </div>
               </div>
             </div>
-          </div>
-          <button
-            type="button"
-            :ref="(el) => registerToolButton('text', el)"
-            :class="[toolMode === 'text' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
-            class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
-            :disabled="!hasImage"
-            title="Text (5)"
-            @click="setToolMode('text')"
-          >
-            <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'text' }" fill="currentColor" viewBox="0 0 24 24"><path d="M3 7V5h18v2h-7v14h-4V7H3z" /></svg>
-            <span class="hidden sm:inline">Text</span>
-          </button>
-          <button
-            type="button"
-            :ref="(el) => registerToolButton('sequence', el)"
-            :class="[toolMode === 'sequence' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
-            class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
-            :disabled="!hasImage"
-            title="Sequence (6)"
-            @click="setToolMode('sequence')"
-          >
-            <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'sequence' }" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" /><text x="12" y="15.5" text-anchor="middle" font-size="10" font-weight="bold" fill="currentColor">1</text></svg>
-            <span class="hidden sm:inline">Sequence</span>
-          </button>
-          <button
-            type="button"
-            :ref="(el) => registerToolButton('move', el)"
-            :class="[toolMode === 'move' ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
-            class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
-            :disabled="!hasImage"
-            title="Move (7)"
-            @click="setToolMode('move')"
-          >
-            <svg class="w-3.5 h-3.5 shrink-0" :class="{ 'tool-icon-pop': toolSwitchAnim && toolMode === 'move' }" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
-            <span class="hidden sm:inline">Move</span>
-          </button>
+            <button
+              v-else
+              type="button"
+              :ref="(el) => registerToolButton(tool.mode, el)"
+              :class="[toolMode === tool.mode ? 'text-white' : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/60' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-300/60')]"
+              class="relative z-10 flex items-center gap-1 sm:gap-1.5 px-1.5 sm:px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors"
+              :disabled="!hasImage"
+              :title="`${tool.label} (${i + 1})`"
+              @click="setToolMode(tool.mode)"
+            >
+              <ToolIcon :mode="tool.mode" :pop="toolSwitchAnim && toolMode === tool.mode" />
+              <span class="hidden sm:inline">{{ tool.label }}</span>
+            </button>
+          </template>
         </div>
 
         <div class="hidden xl:block flex-1 min-w-2" />
@@ -2890,8 +3099,49 @@ watch(showHelp, async (isOpen) => {
           >
             <svg v-if="!copied" class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
             <svg v-else class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7" /></svg>
-            {{ copied ? 'Copied!' : 'Copy to Clipboard' }}
+            {{ copied ? 'Copied!' : 'Copy' }}
           </button>
+          <div class="relative">
+            <button
+              ref="exportMenuButtonRef"
+              type="button"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+              :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100']"
+              :disabled="!hasImage"
+              title="Export"
+              :aria-expanded="showExportMenu"
+              @click.stop="toggleExportMenu"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
+              Export
+            </button>
+            <div
+              v-if="showExportMenu"
+              ref="exportMenuRef"
+              class="absolute top-full right-0 mt-2 z-30 w-48 rounded-xl shadow-2xl border p-1.5"
+              :class="[isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-slate-200']"
+              @click.stop
+            >
+              <button
+                type="button"
+                class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs font-medium text-left transition-colors"
+                :class="[isDark ? 'text-zinc-300 hover:bg-zinc-800' : 'text-slate-700 hover:bg-slate-100']"
+                @click="saveImageToDisk(); closeExportMenu()"
+              >
+                <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5zm10.5-11.25h.008v.008h-.008V8.25z" /></svg>
+                Save image (PNG)
+              </button>
+              <button
+                type="button"
+                class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs font-medium text-left transition-colors"
+                :class="[isDark ? 'text-zinc-300 hover:bg-zinc-800' : 'text-slate-700 hover:bg-slate-100']"
+                @click="showVideoExport = true; closeExportMenu()"
+              >
+                <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z" /></svg>
+                Video…
+              </button>
+            </div>
+          </div>
         </div>
 
         </div>
@@ -3053,6 +3303,7 @@ watch(showHelp, async (isOpen) => {
         <!-- Compact actions + overflow menu (mobile / tablet) -->
         <div class="flex xl:hidden items-center gap-1 ml-auto shrink-0">
           <button
+            v-if="SAVES_ENABLED"
             type="button"
             class="flex items-center justify-center w-8 h-8 rounded-lg transition-colors relative"
             :class="[
@@ -3106,7 +3357,7 @@ watch(showHelp, async (isOpen) => {
           :class="[isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-slate-200']"
           @click.stop
         >
-          <div class="flex items-center gap-2">
+          <div v-if="SAVES_ENABLED" class="flex items-center gap-2">
             <button
               type="button"
               class="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
@@ -3264,6 +3515,26 @@ watch(showHelp, async (isOpen) => {
             <svg class="w-3.5 h-3.5" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" /><text x="12" y="15.5" text-anchor="middle" font-size="10" font-weight="bold" fill="currentColor">1</text></svg>
             {{ labelsEnabled ? 'Hide labels' : 'Show labels' }}
           </button>
+          <button
+            type="button"
+            class="flex w-full items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100']"
+            :disabled="!hasImage"
+            @click="saveImageToDisk(); closeToolbarMenu()"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 013.182 0l5.159 5.159m-1.5-1.5l1.409-1.409a2.25 2.25 0 013.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5H3.75A1.5 1.5 0 002.25 6v12a1.5 1.5 0 001.5 1.5zm10.5-11.25h.008v.008h-.008V8.25z" /></svg>
+            Save image (PNG)
+          </button>
+          <button
+            type="button"
+            class="flex w-full items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100']"
+            :disabled="!hasImage"
+            @click="showVideoExport = true; closeToolbarMenu()"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 10.5l4.72-4.72a.75.75 0 011.28.53v11.38a.75.75 0 01-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 002.25-2.25v-9a2.25 2.25 0 00-2.25-2.25h-9A2.25 2.25 0 002.25 7.5v9a2.25 2.25 0 002.25 2.25z" /></svg>
+            Export as video
+          </button>
           <div class="flex gap-2 pt-1 border-t" :class="[isDark ? 'border-zinc-800' : 'border-slate-200']">
             <button
               type="button"
@@ -3290,7 +3561,7 @@ watch(showHelp, async (isOpen) => {
         </div>
 
         <SavesPanel
-          v-if="showSavesPanel"
+          v-if="SAVES_ENABLED && showSavesPanel"
           :projects="savedProjects"
           :storage-bytes="storageBytes"
           :is-dark="isDark"
@@ -3591,6 +3862,72 @@ watch(showHelp, async (isOpen) => {
               @click="cancelPasteDialog"
             >
               Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <Teleport to="body">
+      <div
+        v-if="showVideoExport"
+        class="fixed inset-0 z-50 flex items-center justify-center p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="video-export-title"
+      >
+        <div class="absolute inset-0 bg-black/50" @click="!isExportingVideo && (showVideoExport = false)" />
+        <div
+          class="relative w-full max-w-sm rounded-xl border p-5 shadow-2xl"
+          :class="[isDark ? 'bg-zinc-900 border-zinc-700' : 'bg-white border-slate-200']"
+        >
+          <h2 id="video-export-title" class="text-base font-semibold" :class="[isDark ? 'text-zinc-100' : 'text-slate-900']">
+            Export as video
+          </h2>
+          <p class="mt-2 text-sm" :class="[isDark ? 'text-zinc-400' : 'text-slate-600']">
+            Replays your
+            <template v-if="stripSegments.length > 1">{{ stripSegments.length - 1 }} appended image{{ stripSegments.length - 1 === 1 ? '' : 's' }} and </template>
+            {{ annotations.length }} annotation{{ annotations.length === 1 ? '' : 's' }} appearing on the image one at a time.
+          </p>
+          <div class="mt-4">
+            <div class="flex items-center justify-between text-xs font-medium" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">
+              <span>Annotations per second</span>
+              <span class="tabular-nums">{{ videoRate }}/s · {{ videoExportDurationLabel }}</span>
+            </div>
+            <input
+              v-model.number="videoRate"
+              type="range"
+              :min="MIN_ANNOTATIONS_PER_SECOND"
+              :max="MAX_ANNOTATIONS_PER_SECOND"
+              step="0.25"
+              class="mt-2 w-full h-1.5 accent-indigo-500"
+              :disabled="isExportingVideo"
+            />
+          </div>
+          <div v-if="isExportingVideo" class="mt-4">
+            <div class="h-1.5 rounded-full overflow-hidden" :class="[isDark ? 'bg-zinc-800' : 'bg-slate-200']">
+              <div class="h-full bg-indigo-500 transition-[width] duration-150" :style="{ width: `${Math.round(videoExportProgress * 100)}%` }" />
+            </div>
+            <p class="mt-2 text-xs text-center" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">Recording… {{ Math.round(videoExportProgress * 100) }}%</p>
+          </div>
+          <p v-if="videoExportError" class="mt-3 text-xs text-red-500">{{ videoExportError }}</p>
+          <div class="mt-5 flex gap-2">
+            <button
+              type="button"
+              class="flex-1 px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              :class="[isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-800']"
+              :disabled="isExportingVideo"
+              @click="showVideoExport = false"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="flex-1 px-4 py-2 rounded-lg text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              :disabled="isExportingVideo"
+              @click="exportVideo"
+            >
+              {{ isExportingVideo ? 'Recording…' : 'Export' }}
             </button>
           </div>
         </div>

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { SAVES_ENABLED } from '~/utils/config'
+
 defineProps<{
   isDark: boolean
 }>()
@@ -24,10 +26,10 @@ defineProps<{
       Mark it up
     </h3>
     <p :class="[isDark ? 'text-zinc-300' : 'text-zinc-700']" class="text-sm leading-relaxed">
-      Pick a tool from the toolbar and draw on the image. <span class="font-semibold">Pen</span> is for freehand squiggles. <span class="font-semibold">Arrow</span> is for pointing at something specific. <span class="font-semibold">Box</span> draws a rectangle to highlight a region. <span class="font-semibold">Emoji</span> drops a reaction from a built-in picker. <span class="font-semibold">Text</span> adds a label you can type directly on the canvas. <span class="font-semibold">Sequence</span> adds numbered step markers (1, 2, 3…) that renumber themselves when you delete one.
+      Pick a tool from the toolbar and draw on the image. <span class="font-semibold">Pen</span> is for freehand squiggles. <span class="font-semibold">Arrow</span> is for pointing at something specific. <span class="font-semibold">Box</span> draws a rectangle to highlight a region. <span class="font-semibold">Emoji</span> drops a reaction from a built-in picker. <span class="font-semibold">Text</span> adds a label you can type directly on the canvas. <span class="font-semibold">Sequence</span> adds numbered step markers (1, 2, 3…) that renumber themselves when you delete one. Each tool has a number key shortcut — press <span class="font-semibold">1–8</span> to switch instantly (the number is shown on the button).
     </p>
     <p :class="[isDark ? 'text-zinc-300' : 'text-zinc-700']" class="text-sm leading-relaxed mt-3">
-      To move an annotation or change its size, switch to the <span class="font-semibold">Move</span> tool, click the annotation, and drag. The handles around the edges let you resize.
+      To remove an annotation entirely, switch to the <span class="font-semibold">Eraser</span> and click it (or drag across several). To move an annotation or change its size, switch to the <span class="font-semibold">Move</span> tool, click the annotation, and drag. The handles around the edges let you resize.
     </p>
     <p :class="[isDark ? 'text-zinc-300' : 'text-zinc-700']" class="text-sm leading-relaxed mt-3">
       Made a mistake? <span class="font-semibold">Cmd+Z</span> / <span class="font-semibold">Ctrl+Z</span> (or the Undo button) steps back. The Clear button starts over with the same image.
@@ -47,9 +49,9 @@ defineProps<{
       Save and copy
     </h3>
     <p :class="[isDark ? 'text-zinc-300' : 'text-zinc-700']" class="text-sm leading-relaxed">
-      When your screenshot looks right, click <span class="font-semibold">Copy to Clipboard</span>. JoltShot puts the marked-up image on your clipboard as a PNG, ready to paste into a chat, a doc, an issue tracker, anywhere.
+      When your screenshot looks right, click <span class="font-semibold">Copy</span>. JoltShot puts the marked-up image on your clipboard as a PNG, ready to paste into a chat, a doc, an issue tracker, anywhere. Prefer a file? The <span class="font-semibold">Export</span> menu can save the image to disk as a PNG, or export a video of your work being built up — appended screenshots and annotations appear one at a time, at the pace you pick (adjust the "annotations per second" slider before exporting).
     </p>
-    <p :class="[isDark ? 'text-zinc-300' : 'text-zinc-700']" class="text-sm leading-relaxed mt-3">
+    <p v-if="SAVES_ENABLED" :class="[isDark ? 'text-zinc-300' : 'text-zinc-700']" class="text-sm leading-relaxed mt-3">
       If you want to come back to a project later, the <span class="font-semibold">Saves</span> panel in the top-right stores your work in your browser. Saved projects keep the image, the annotations, the strip layout, and any custom labels. Open the panel to restore one, or to delete the ones you no longer need.
     </p>
 
