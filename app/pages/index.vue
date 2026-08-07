@@ -6,6 +6,7 @@ import {
   eraseAnnotationAt,
   getArrowTip,
   hitTestArrow,
+  offsetAnnotations,
   type Annotation,
   type ArrowAnnotation,
   type BlurAnnotation,
@@ -24,11 +25,22 @@ import {
   exportDurationMs,
   supportedVideoMimeTypes,
   visibleAnnotationCount,
-  baseRevealWidth,
 } from '~/utils/video-export'
 import { TOOLS, buildToolShortcuts, type ToolDescriptor } from '~/utils/tools'
 import { SAVES_ENABLED } from '~/utils/config'
 import { exportFileName } from '~/utils/download'
+import {
+  BORDER_THICKNESS_DEFAULT,
+  BORDER_THICKNESS_MAX,
+  BORDER_THICKNESS_MIN,
+  borderRadiusFor,
+  clampBorderThickness,
+  compositeWithBorder,
+  fillWithGradient,
+  generateRandomGradient,
+  gradientCss,
+  type GradientBorder,
+} from '~/utils/gradient'
 import {
   type SavedProjectMeta,
   type SavedBaseImage,
@@ -134,6 +146,31 @@ const strokeWidth = ref(4)
 const currentPath = ref<{ x: number, y: number }[]>([])
 const fileInputRef = ref<HTMLInputElement | null>(null)
 
+// Gradient border state (previewed via CSS frame, composited into exports)
+const borderGradient = ref<GradientBorder | null>(null)
+const borderThickness = ref(BORDER_THICKNESS_DEFAULT)
+const borderFrameRef = ref<HTMLDivElement | null>(null)
+
+function applyRandomGradientBorder() {
+  if (!hasImage.value) return
+  borderGradient.value = generateRandomGradient()
+  nextTick(() => applyZoomTransform())
+  scheduleAutoSave()
+}
+
+function toggleGradientBorder() {
+  if (!hasImage.value) return
+  borderGradient.value = borderGradient.value ? null : generateRandomGradient()
+  nextTick(() => applyZoomTransform())
+  scheduleAutoSave()
+}
+
+function onBorderThicknessInput(value: number) {
+  borderThickness.value = clampBorderThickness(value)
+  applyZoomTransform()
+  scheduleAutoSave()
+}
+
 type BaseImage = {
   objectUrl: string | null
   image: HTMLImageElement
@@ -143,6 +180,7 @@ const baseImage = ref<BaseImage | null>(null)
 const imageElementCache = new Map<string, HTMLImageElement>()
 const trackedObjectUrls = new Set<string>()
 const showPasteDialog = ref(false)
+const showAppendDirections = ref(false)
 const pendingPasteFile = ref<File | null>(null)
 const showHelp = ref(false)
 const helpButtonRef = ref<HTMLButtonElement | null>(null)
@@ -150,12 +188,14 @@ const helpCardRef = ref<HTMLDivElement | null>(null)
 let previouslyFocusedElement: HTMLElement | null = null
 let helpKeydownCleanup: (() => void) | null = null
 
-// Append-to-right strip state
+// Append-to-edge strip state
 const STRIP_GAP = 8
 const LABEL_MIN_FONT = 8
 const LABEL_PILL_PADDING_RATIO = 0.5
 const LABEL_FOCUS_RING_COLOR = '#6366f1'
-const stripSegments = ref<{ x: number, width: number, labelText: string }[]>([])
+type AppendDirection = 'left' | 'right' | 'top' | 'bottom'
+type StripSegment = { x: number, y: number, width: number, height: number, labelText: string }
+const stripSegments = ref<StripSegment[]>([])
 const labelsEnabled = ref(true)
 const sessionLabelDefault = ref(true)
 const editingLabelIndex = ref<number | null>(null)
@@ -459,10 +499,13 @@ function clampView() {
   }
   const scale = displayScale.value
   if (scale <= 0) return
-  const maxX = canvas.width - wrapper.clientWidth / scale
-  const maxY = canvas.height - wrapper.clientHeight / scale
-  viewX.value = maxX <= 0 ? 0 : Math.min(Math.max(viewX.value, 0), maxX)
-  viewY.value = maxY <= 0 ? 0 : Math.min(Math.max(viewY.value, 0), maxY)
+  const pad = borderGradient.value ? borderThickness.value : 0
+  const minX = -pad
+  const minY = -pad
+  const maxX = canvas.width + pad - wrapper.clientWidth / scale
+  const maxY = canvas.height + pad - wrapper.clientHeight / scale
+  viewX.value = maxX <= minX ? 0 : Math.min(Math.max(viewX.value, minX), maxX)
+  viewY.value = maxY <= minY ? 0 : Math.min(Math.max(viewY.value, minY), maxY)
 }
 
 function applyZoomTransform() {
@@ -474,7 +517,8 @@ function applyZoomTransform() {
   const maxH = wrapper.clientHeight
   if (maxW === 0 || maxH === 0) return
 
-  fitScale.value = Math.min(maxW / canvas.width, maxH / canvas.height, 1)
+  const pad = borderGradient.value ? borderThickness.value : 0
+  fitScale.value = Math.min(maxW / (canvas.width + 2 * pad), maxH / (canvas.height + 2 * pad), 1)
   clampView()
 
   const scale = displayScale.value
@@ -487,6 +531,23 @@ function applyZoomTransform() {
   canvas.style.height = `${displayH}px`
   canvas.style.left = `${baseLeft - viewX.value * scale}px`
   canvas.style.top = `${baseTop - viewY.value * scale}px`
+
+  const frame = borderFrameRef.value
+  if (borderGradient.value) {
+    const t = borderThickness.value * scale
+    const radius = borderRadiusFor(canvas.width, canvas.height) * scale
+    canvas.style.borderRadius = `${radius}px`
+    if (frame) {
+      frame.style.width = `${displayW + 2 * t}px`
+      frame.style.height = `${displayH + 2 * t}px`
+      frame.style.left = `${baseLeft - viewX.value * scale - t}px`
+      frame.style.top = `${baseTop - viewY.value * scale - t}px`
+      frame.style.borderRadius = `${radius + t}px`
+      frame.style.background = gradientCss(borderGradient.value)
+    }
+  } else {
+    canvas.style.borderRadius = ''
+  }
 }
 
 function updateCanvasDisplaySize() {
@@ -756,14 +817,18 @@ function drawAnnotations(ctx: CanvasRenderingContext2D, anns: Annotation[] = ann
   }
 }
 
+function stripLabelRadius(canvas: HTMLCanvasElement): number {
+  return Math.min(28, Math.max(14, Math.min(canvas.width, canvas.height) * 0.03))
+}
+
 function getLabelMetrics(
-  seg: { x: number, width: number, labelText: string },
+  seg: StripSegment,
   i: number,
   radius: number,
   ctx: CanvasRenderingContext2D,
 ): { text: string, fontSize: number, isPill: boolean, rect: { x: number, y: number, w: number, h: number } } {
   const inset = radius * 0.75 + 6
-  const cy = inset + radius
+  const cy = seg.y + inset + radius
   const cx = seg.x + inset + radius
   let text = displayedLabelText(seg, i)
   let fontSize = Math.round(radius)
@@ -816,7 +881,7 @@ function hitTestLabel(canvasX: number, canvasY: number, ctx: CanvasRenderingCont
   if (editingLabelIndex.value !== null) return null
   const canvas = getCanvas()
   if (!canvas) return null
-  const radius = Math.min(28, Math.max(14, canvas.height * 0.03))
+  const radius = stripLabelRadius(canvas)
   for (let i = stripSegments.value.length - 1; i >= 0; i--) {
     const m = getLabelMetrics(stripSegments.value[i]!, i, radius, ctx)
     if (
@@ -830,7 +895,7 @@ function hitTestLabel(canvasX: number, canvasY: number, ctx: CanvasRenderingCont
 function drawStripLabels(ctx: CanvasRenderingContext2D, maxCount = stripSegments.value.length) {
   const canvas = getCanvas()
   if (!canvas || stripSegments.value.length < 2 || !labelsEnabled.value) return
-  const radius = Math.min(28, Math.max(14, canvas.height * 0.03))
+  const radius = stripLabelRadius(canvas)
   ctx.save()
   const count = Math.min(maxCount, stripSegments.value.length)
   for (let i = 0; i < count; i++) {
@@ -1114,7 +1179,7 @@ async function addImageAsLayer(file: File) {
   }
 }
 
-async function appendImageToRight(file: File) {
+async function appendImage(file: File, direction: AppendDirection) {
   const canvas = getCanvas()
   const base = baseImage.value
   if (!canvas || !base || !hasImage.value) return
@@ -1128,8 +1193,13 @@ async function appendImageToRight(file: File) {
     }
     const oldWidth = canvas.width
     const oldHeight = canvas.height
-    const newWidth = oldWidth + STRIP_GAP + img.naturalWidth
-    const newHeight = Math.max(oldHeight, img.naturalHeight)
+    const horizontal = direction === 'left' || direction === 'right'
+    const newWidth = horizontal ? oldWidth + STRIP_GAP + img.naturalWidth : Math.max(oldWidth, img.naturalWidth)
+    const newHeight = horizontal ? Math.max(oldHeight, img.naturalHeight) : oldHeight + STRIP_GAP + img.naturalHeight
+    const dx = direction === 'left' ? img.naturalWidth + STRIP_GAP : 0
+    const dy = direction === 'top' ? img.naturalHeight + STRIP_GAP : 0
+    const nx = direction === 'right' ? oldWidth + STRIP_GAP : 0
+    const ny = direction === 'bottom' ? oldHeight + STRIP_GAP : 0
 
     const composite = document.createElement('canvas')
     composite.width = newWidth
@@ -1138,8 +1208,8 @@ async function appendImageToRight(file: File) {
     if (!cctx) throw new Error('no-2d-context')
     cctx.fillStyle = '#ffffff'
     cctx.fillRect(0, 0, newWidth, newHeight)
-    cctx.drawImage(base.image, 0, 0, oldWidth, oldHeight)
-    cctx.drawImage(img, oldWidth + STRIP_GAP, 0)
+    cctx.drawImage(base.image, dx, dy, oldWidth, oldHeight)
+    cctx.drawImage(img, nx, ny)
     URL.revokeObjectURL(objectUrl)
 
     const compositeImg = await loadImageElement(composite.toDataURL('image/png'))
@@ -1150,10 +1220,18 @@ async function appendImageToRight(file: File) {
     canvas.width = newWidth
     canvas.height = newHeight
     baseImage.value = { objectUrl: null, image: compositeImg }
-    if (stripSegments.value.length === 0) {
-      stripSegments.value = [{ x: 0, width: oldWidth, labelText: '' }]
+
+    if (dx !== 0 || dy !== 0) {
+      annotations.value = offsetAnnotations(annotations.value, dx, dy)
+      annotationHistory.value = []
     }
-    stripSegments.value = [...stripSegments.value, { x: oldWidth + STRIP_GAP, width: img.naturalWidth, labelText: '' }]
+
+    if (stripSegments.value.length === 0) {
+      stripSegments.value = [{ x: dx, y: dy, width: oldWidth, height: oldHeight, labelText: '' }]
+    } else if (dx !== 0 || dy !== 0) {
+      stripSegments.value = stripSegments.value.map(s => ({ ...s, x: s.x + dx, y: s.y + dy }))
+    }
+    stripSegments.value = [...stripSegments.value, { x: nx, y: ny, width: img.naturalWidth, height: img.naturalHeight, labelText: '' }]
     labelsEnabled.value = sessionLabelDefault.value
     resetZoom()
     redrawCanvas()
@@ -1179,6 +1257,7 @@ function queueImageImport(file: File) {
 
 function cancelPasteDialog() {
   showPasteDialog.value = false
+  showAppendDirections.value = false
   pendingPasteFile.value = null
 }
 
@@ -1196,11 +1275,11 @@ async function confirmAddImageLayer() {
   await addImageAsLayer(file)
 }
 
-async function confirmAppendImage() {
+async function confirmAppendImage(direction: AppendDirection) {
   const file = pendingPasteFile.value
   if (!file) return
   cancelPasteDialog()
-  await appendImageToRight(file)
+  await appendImage(file, direction)
 }
 
 function clearAnnotations({ keepSaved = false, resetProject = true }: { keepSaved?: boolean, resetProject?: boolean } = {}) {
@@ -1591,7 +1670,7 @@ const labelEditorStyle = computed(() => {
   if (i == null) return {}
   const seg = stripSegments.value[i]
   if (!seg) return {}
-  const radius = Math.min(28, Math.max(14, canvas.height * 0.03))
+  const radius = stripLabelRadius(canvas)
   // Size the editor overlay to the current draft so the input grows as the user types,
   // matching the pill rect that will be rendered on commit.
   const draftSeg = { ...seg, labelText: editingLabelDraft.value }
@@ -1874,8 +1953,11 @@ async function copyToClipboard() {
   const canvas = getCanvas()
   if (!canvas || !hasImage.value) return
   try {
+    const exportCanvas = borderGradient.value
+      ? compositeWithBorder(canvas, borderGradient.value, borderThickness.value)
+      : canvas
     const blob = await new Promise<Blob | null>((resolve) => {
-      canvas.toBlob(resolve, 'image/png')
+      exportCanvas.toBlob(resolve, 'image/png')
     })
     if (!blob) throw new Error('Failed to create blob')
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
@@ -1915,8 +1997,11 @@ async function saveImageToDisk() {
   const canvas = getCanvas()
   if (!canvas || !hasImage.value) return
   try {
+    const exportCanvas = borderGradient.value
+      ? compositeWithBorder(canvas, borderGradient.value, borderThickness.value)
+      : canvas
     const blob = await new Promise<Blob | null>((resolve) => {
-      canvas.toBlob(resolve, 'image/png')
+      exportCanvas.toBlob(resolve, 'image/png')
     })
     if (!blob) throw new Error('Failed to create blob')
     downloadBlob(blob, exportFileName(projectName.value, 'png'))
@@ -1961,24 +2046,53 @@ async function exportVideo() {
   const extraSegments = Math.max(0, segments.length - 1)
   const total = extraSegments + annotations.value.length
   const duration = exportDurationMs(total, msPer)
+  const borderPad = borderGradient.value ? borderThickness.value : 0
 
   const drawFrameAt = (octx: CanvasRenderingContext2D, off: HTMLCanvasElement, elapsed: number) => {
+    const contentW = off.width - 2 * borderPad
+    const contentH = off.height - 2 * borderPad
     const revealed = visibleAnnotationCount(elapsed, total, msPer)
     const segsRevealed = Math.min(revealed, extraSegments)
     const annsRevealed = revealed - segsRevealed
-    const revealW = baseRevealWidth(segments, 1 + segsRevealed, off.width)
+    if (borderGradient.value) {
+      const radius = borderRadiusFor(contentW, contentH)
+      octx.save()
+      octx.beginPath()
+      octx.roundRect(0, 0, off.width, off.height, radius + borderPad)
+      octx.clip()
+      fillWithGradient(octx, off.width, off.height, borderGradient.value)
+      octx.restore()
+      octx.save()
+      octx.translate(borderPad, borderPad)
+      octx.beginPath()
+      octx.roundRect(0, 0, contentW, contentH, radius)
+      octx.clip()
+    } else {
+      octx.save()
+      octx.fillStyle = '#ffffff'
+      octx.fillRect(0, 0, off.width, off.height)
+    }
     octx.fillStyle = '#ffffff'
-    octx.fillRect(0, 0, off.width, off.height)
-    octx.drawImage(base.image, 0, 0, revealW, off.height, 0, 0, revealW, off.height)
-    drawAnnotations(octx, annotations.value.slice(0, annsRevealed), off)
+    octx.fillRect(0, 0, contentW, contentH)
+    const shownSegCount = Math.min(1 + segsRevealed, segments.length)
+    if (shownSegCount === 0) {
+      octx.drawImage(base.image, 0, 0, contentW, contentH)
+    } else {
+      for (let si = 0; si < shownSegCount; si++) {
+        const seg = segments[si]!
+        octx.drawImage(base.image, seg.x, seg.y, seg.width, seg.height, seg.x, seg.y, seg.width, seg.height)
+      }
+    }
+    drawAnnotations(octx, annotations.value.slice(0, annsRevealed), borderPad > 0 ? canvas : off)
     drawStripLabels(octx, 1 + segsRevealed)
+    octx.restore()
     videoExportProgress.value = Math.min(1, elapsed / duration)
   }
 
   const recordAttempt = async (mimeType: string): Promise<Blob> => {
     const off = document.createElement('canvas')
-    off.width = canvas.width
-    off.height = canvas.height
+    off.width = canvas.width + 2 * borderPad
+    off.height = canvas.height + 2 * borderPad
     const octx = off.getContext('2d')
     if (!octx) throw new Error('no-2d-context')
     // Paint a frame before starting so the stream has content immediately
@@ -2100,6 +2214,8 @@ function buildSavedSettings(): SavedSettings {
     textFontSize: textFontSize.value,
     emojiSize: emojiSize.value,
     sequenceLabelSize: sequenceLabelSize.value,
+    borderGradient: borderGradient.value ? { ...borderGradient.value } : null,
+    borderThickness: borderThickness.value,
   }
 }
 
@@ -2129,7 +2245,7 @@ async function performSave(opts: { silent?: boolean } = {}): Promise<boolean> {
       layers,
       annotations: JSON.parse(JSON.stringify(annotations.value)),
       strip: stripSegments.value.length > 1
-        ? { segments: stripSegments.value.map(s => ({ x: s.x, width: s.width, labelText: s.labelText })), labelsEnabled: labelsEnabled.value }
+        ? { segments: stripSegments.value.map(s => ({ x: s.x, y: s.y, width: s.width, height: s.height, labelText: s.labelText })), labelsEnabled: labelsEnabled.value }
         : undefined,
       settings: buildSavedSettings(),
       thumbDataUrl: makeThumbnailFromCanvas(canvas),
@@ -2240,9 +2356,17 @@ async function loadSavedProjectIntoCanvas(id: string) {
     textFontSize.value = saved.settings.textFontSize
     emojiSize.value = saved.settings.emojiSize
     sequenceLabelSize.value = saved.settings.sequenceLabelSize ?? 'auto'
+    borderGradient.value = saved.settings.borderGradient ?? null
+    borderThickness.value = clampBorderThickness(saved.settings.borderThickness ?? BORDER_THICKNESS_DEFAULT)
 
     if (saved.strip && saved.strip.segments.length > 1) {
-      stripSegments.value = saved.strip.segments.map(s => ({ x: s.x, width: s.width, labelText: s.labelText ?? '' }))
+      stripSegments.value = saved.strip.segments.map(s => ({
+        x: s.x,
+        y: s.y ?? 0,
+        width: s.width,
+        height: s.height ?? saved.height,
+        labelText: s.labelText ?? '',
+      }))
       labelsEnabled.value = saved.strip.labelsEnabled
     }
 
@@ -3234,6 +3358,50 @@ watch(showHelp, async (isOpen) => {
           </div>
         </div>
 
+        <!-- Gradient border (desktop) -->
+        <div class="hidden xl:block w-px h-5 mx-1.5 shrink-0" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
+        <div class="hidden xl:flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+            :class="[borderGradient
+              ? (isDark ? 'bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30' : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200')
+              : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100')]"
+            :disabled="!hasImage"
+            title="Toggle gradient border"
+            @click="toggleGradientBorder"
+          >
+            <span
+              class="w-3.5 h-3.5 rounded-full ring-1"
+              :class="[isDark ? 'ring-white/10' : 'ring-slate-300']"
+              :style="{ background: borderGradient ? gradientCss(borderGradient) : 'conic-gradient(#f43f5e, #f59e0b, #10b981, #3b82f6, #8b5cf6, #f43f5e)' }"
+            />
+            Border
+          </button>
+          <template v-if="borderGradient">
+            <button
+              type="button"
+              class="flex items-center justify-center w-7 h-7 rounded-md transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
+              :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100']"
+              :disabled="!hasImage"
+              title="Shuffle gradient"
+              @click="applyRandomGradientBorder"
+            >
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5" /></svg>
+            </button>
+            <input
+              type="range"
+              :min="BORDER_THICKNESS_MIN"
+              :max="BORDER_THICKNESS_MAX"
+              :value="borderThickness"
+              class="w-20 h-1.5 accent-indigo-500"
+              :disabled="!hasImage"
+              @input="onBorderThicknessInput(Number(($event.target as HTMLInputElement).value))"
+            />
+            <span class="text-xs tabular-nums" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">{{ borderThickness }}px</span>
+          </template>
+        </div>
+
         <!-- Sequence label size (desktop, sequence tool only) -->
         <template v-if="toolMode === 'sequence'">
           <div class="hidden xl:block w-px h-5 mx-1.5 shrink-0" :class="[isDark ? 'bg-zinc-700' : 'bg-slate-300']" />
@@ -3454,6 +3622,51 @@ watch(showHelp, async (isOpen) => {
             </div>
           </div>
 
+          <div>
+            <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Border</span>
+            <div class="flex items-center gap-2 mt-2">
+              <button
+                type="button"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                :class="[borderGradient
+                  ? (isDark ? 'bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600/30' : 'bg-indigo-100 text-indigo-700 hover:bg-indigo-200')
+                  : (isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100')]"
+                :disabled="!hasImage"
+                title="Toggle gradient border"
+                @click="toggleGradientBorder"
+              >
+                <span
+                  class="w-3.5 h-3.5 rounded-full ring-1"
+                  :class="[isDark ? 'ring-white/10' : 'ring-slate-300']"
+                  :style="{ background: borderGradient ? gradientCss(borderGradient) : 'conic-gradient(#f43f5e, #f59e0b, #10b981, #3b82f6, #8b5cf6, #f43f5e)' }"
+                />
+                Border
+              </button>
+              <template v-if="borderGradient">
+                <button
+                  type="button"
+                  class="flex items-center justify-center w-7 h-7 rounded-md transition-colors disabled:opacity-30 disabled:cursor-not-allowed shrink-0"
+                  :class="[isDark ? 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800' : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100']"
+                  :disabled="!hasImage"
+                  title="Shuffle gradient"
+                  @click="applyRandomGradientBorder"
+                >
+                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M16 3h5v5M4 20L21 3M21 16v5h-5M15 15l6 6M4 4l5 5" /></svg>
+                </button>
+                <input
+                  type="range"
+                  :min="BORDER_THICKNESS_MIN"
+                  :max="BORDER_THICKNESS_MAX"
+                  :value="borderThickness"
+                  class="flex-1 h-1.5 accent-indigo-500"
+                  :disabled="!hasImage"
+                  @input="onBorderThicknessInput(Number(($event.target as HTMLInputElement).value))"
+                />
+                <span class="text-xs tabular-nums w-10 text-right" :class="[isDark ? 'text-zinc-400' : 'text-slate-500']">{{ borderThickness }}px</span>
+              </template>
+            </div>
+          </div>
+
           <div v-if="toolMode === 'sequence'">
             <span class="text-xs font-medium uppercase tracking-wider" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">Sequence Label Size</span>
             <div class="flex items-center gap-2 mt-2">
@@ -3609,6 +3822,12 @@ watch(showHelp, async (isOpen) => {
             </button>
           </div>
         </div>
+
+        <div
+          v-show="hasImage && borderGradient"
+          ref="borderFrameRef"
+          class="absolute block pointer-events-none"
+        />
 
         <canvas
           v-show="hasImage"
@@ -3825,7 +4044,7 @@ watch(showHelp, async (isOpen) => {
             Add image
           </h2>
           <p class="mt-2 text-sm" :class="[isDark ? 'text-zinc-400' : 'text-slate-600']">
-            An image is already loaded. Replace it, append it to the right as a sequence, or add it as a layer on top?
+            An image is already loaded. Replace it, append it to an edge as a sequence, or add it as a layer on top?
           </p>
           <label class="mt-4 flex items-center gap-2 text-sm cursor-pointer select-none" :class="[isDark ? 'text-zinc-300' : 'text-slate-700']">
             <input v-model="sessionLabelDefault" type="checkbox" class="w-4 h-4 rounded accent-indigo-600" />
@@ -3842,10 +4061,14 @@ watch(showHelp, async (isOpen) => {
             </button>
             <button
               type="button"
-              class="flex-1 whitespace-nowrap px-3 py-2 rounded-lg text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white transition-colors"
-              @click="confirmAppendImage"
+              class="flex-1 whitespace-nowrap px-3 py-2 rounded-lg text-sm font-semibold transition-colors"
+              :class="[showAppendDirections
+                ? 'bg-indigo-500 hover:bg-indigo-400 text-white ring-2 ring-indigo-300'
+                : 'bg-indigo-600 hover:bg-indigo-500 text-white']"
+              :aria-expanded="showAppendDirections"
+              @click="showAppendDirections = !showAppendDirections"
             >
-              Append to right
+              Append to image
             </button>
             <button
               type="button"
@@ -3863,6 +4086,54 @@ watch(showHelp, async (isOpen) => {
             >
               Cancel
             </button>
+          </div>
+          <div v-if="showAppendDirections" class="mt-4">
+            <p class="text-xs font-medium uppercase tracking-wider text-center" :class="[isDark ? 'text-zinc-500' : 'text-slate-500']">
+              Append to which edge?
+            </p>
+            <div class="mt-2 grid grid-cols-3 gap-2 max-w-[260px] mx-auto">
+              <div />
+              <button
+                type="button"
+                class="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
+                :class="[isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-800']"
+                @click="confirmAppendImage('top')"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 19V5m0 0l-7 7m7-7l7 7" /></svg>
+                Top
+              </button>
+              <div />
+              <button
+                type="button"
+                class="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
+                :class="[isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-800']"
+                @click="confirmAppendImage('left')"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 12H5m0 0l7 7m-7-7l7-7" /></svg>
+                Left
+              </button>
+              <div />
+              <button
+                type="button"
+                class="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
+                :class="[isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-800']"
+                @click="confirmAppendImage('right')"
+              >
+                Right
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 12h14m0 0l-7-7m7 7l-7 7" /></svg>
+              </button>
+              <div />
+              <button
+                type="button"
+                class="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors"
+                :class="[isDark ? 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200' : 'bg-slate-100 hover:bg-slate-200 text-slate-800']"
+                @click="confirmAppendImage('bottom')"
+              >
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 5v14m0 0l7-7m-7 7l-7-7" /></svg>
+                Bottom
+              </button>
+              <div />
+            </div>
           </div>
         </div>
       </div>

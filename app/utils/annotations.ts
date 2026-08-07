@@ -111,3 +111,16 @@ export function eraseAnnotationAt(
   if (idx === null) return null
   return { annotations: anns.filter((_, i) => i !== idx), removedIndex: idx }
 }
+
+export function offsetAnnotations(anns: readonly Annotation[], dx: number, dy: number): Annotation[] {
+  if (dx === 0 && dy === 0) return [...anns]
+  return anns.map((ann) => {
+    if (ann.type === 'pen') {
+      return { ...ann, path: ann.path.map(p => ({ x: p.x + dx, y: p.y + dy })) }
+    }
+    if (ann.type === 'arrow') {
+      return { ...ann, x1: ann.x1 + dx, y1: ann.y1 + dy }
+    }
+    return { ...ann, x: ann.x + dx, y: ann.y + dy }
+  })
+}

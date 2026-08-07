@@ -13,6 +13,7 @@ import {
   hitTestPenStroke,
   hitTestSequence,
   hitTestText,
+  offsetAnnotations,
   type Annotation,
 } from '~/utils/annotations'
 
@@ -155,5 +156,45 @@ describe('eraseAnnotationAt', () => {
     const anns: Annotation[] = [pen(), box()]
     eraseAnnotationAt(anns, 100, 90, 20)
     expect(anns).toHaveLength(2)
+  })
+})
+
+describe('offsetAnnotations', () => {
+  it('shifts point-based annotations by dx/dy', () => {
+    const anns: Annotation[] = [box(), emoji(), text(), image(), seq(), blur()]
+    const shifted = offsetAnnotations(anns, 15, 25)
+    expect(shifted[0]).toMatchObject({ x: 65, y: 75 })
+    expect(shifted[1]).toMatchObject({ x: 215, y: 225 })
+    expect(shifted[2]).toMatchObject({ x: 315, y: 325 })
+    expect(shifted[3]).toMatchObject({ x: 415, y: 425 })
+    expect(shifted[4]).toMatchObject({ x: 515, y: 525 })
+    expect(shifted[5]).toMatchObject({ x: 615, y: 625 })
+  })
+
+  it('shifts every point of a pen path', () => {
+    const shifted = offsetAnnotations([pen()], 5, -5)
+    expect(shifted[0]).toMatchObject({
+      type: 'pen',
+      path: [{ x: 15, y: 5 }, { x: 105, y: 95 }],
+    })
+  })
+
+  it('shifts an arrow tail and preserves length/angle', () => {
+    const shifted = offsetAnnotations([arrow()], 10, 20)
+    expect(shifted[0]).toMatchObject({ type: 'arrow', x1: 10, y1: 20, length: 100, angle: 0 })
+  })
+
+  it('returns a copy and does not mutate the originals', () => {
+    const anns: Annotation[] = [pen(), box()]
+    offsetAnnotations(anns, 10, 10)
+    expect(anns[0]).toMatchObject({ path: [{ x: 10, y: 10 }, { x: 100, y: 100 }] })
+    expect(anns[1]).toMatchObject({ x: 50, y: 50 })
+  })
+
+  it('is a no-op copy for zero offsets', () => {
+    const anns: Annotation[] = [box()]
+    const shifted = offsetAnnotations(anns, 0, 0)
+    expect(shifted).not.toBe(anns)
+    expect(shifted[0]).toBe(anns[0])
   })
 })
